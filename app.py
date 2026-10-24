@@ -8,7 +8,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Récupération de la clé depuis les Secrets Streamlit
+# Récupération sécurisée de la clé depuis les secrets Streamlit
 api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
 
 if not api_key:
@@ -19,16 +19,16 @@ client = Groq(api_key=api_key)
 
 st.title("📚 EduBot Studio")
 
-# Initialisation de l'historique
+# Initialisation de l'historique pour garder la mémoire
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Affichage des messages
+# Affichage de l'historique des messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Envoi de la requête avec mémoire de la conversation
+# Envoi de la requête avec tout l'historique
 if prompt := st.chat_input("Pose ta question..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -45,4 +45,3 @@ if prompt := st.chat_input("Pose ta question..."):
             st.session_state.messages.append({"role": "assistant", "content": reply})
         except Exception as e:
             st.error(f"Erreur technique : {e}")
-            
