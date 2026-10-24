@@ -1,7 +1,6 @@
 import streamlit as st
 import os
 from groq import Groq
-import urllib.parse
 
 st.set_page_config(
     page_title="EduBot Studio",
@@ -33,9 +32,8 @@ if prompt := st.chat_input("Pose ta question..."):
 
     with st.chat_message("assistant"):
         try:
-            # Appel ultra-simplifié sans rôle system pour éviter tout BadRequestError
             response = client.chat.completions.create(
-                model="gemma2-9b-it",
+                model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}]
             )
             reply = response.choices[0].message.content
