@@ -157,7 +157,7 @@ if prompt := st.chat_input("Posez votre question de cours ou demandez un schéma
             
             # Appel à l'API Groq (modèle Llama 3 rapide)
             chat_completion = client.chat.completions.create(
-                model="llama3-70b-8192",  # Modèle Llama 3 ultra puissant sur Groq
+               model="llama-3.1-70b-versatile",  # Modèle Llama 3 ultra puissant sur Groq
                 messages=[system_prompt] + messages
             )
             reply_text = chat_completion.choices[0].message.content
