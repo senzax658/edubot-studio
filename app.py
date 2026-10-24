@@ -1,5 +1,4 @@
 import streamlit as st
-import os
 from groq import Groq
 
 st.set_page_config(
@@ -8,13 +7,8 @@ st.set_page_config(
     layout="wide"
 )
 
-api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
-
-if not api_key:
-    st.error("⚠️ Clé API Groq manquante dans les secrets Streamlit !")
-    st.stop()
-
-client = Groq(api_key=api_key)
+# Connexion directe avec ta clé pour éviter les bugs de secrets
+client = Groq(api_key="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")
 
 st.title("📚 EduBot Studio")
 
