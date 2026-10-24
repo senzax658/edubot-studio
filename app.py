@@ -11,7 +11,6 @@ st.set_page_config(
 )
 
 # --- 2. CONNEXION À GROQ API ---
-# On récupère la clé API depuis les secrets de Streamlit ou de l'environnement
 api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
 
 if not api_key:
@@ -125,7 +124,7 @@ for msg in messages:
         if "image_url" in msg:
             st.image(msg["image_url"], caption="Schéma pédagogique généré par EduBot", use_column_width=True)
 
-# --- 8. GENERATEUR DE SCHÉMAS ÉDUCATIFS ---
+# --- 8. GÉNÉRATEUR DE SCHÉMAS ÉDUCATIFS ---
 def generate_educational_schema(prompt_text):
     clean_prompt = f"academic whiteboard diagram, clean educational vector graphic, scientific math physics illustration, high resolution chart, {prompt_text}"
     encoded_prompt = urllib.parse.quote(clean_prompt)
@@ -150,15 +149,15 @@ if prompt := st.chat_input("Posez votre question de cours ou demandez un schéma
     with st.chat_message("assistant", avatar="🎓"):
         with st.spinner("EduBot prépare l'explication et la synthèse..."):
             
-            system_prompt = {
-                "role": "system",
-                "content": "Tu es EduBot, un tuteur pédagogique d'élite pour lycéens. Tes réponses sont rigoureuses, structurées, claires, et rédigées dans un ton académique encourageant."
-            }
-            
-            # Appel à l'API Groq (modèle Llama 3 rapide)
+            # Préparation de l'historique pour l'API
+            groq_messages = [
+                {"role": "system", "content": "Tu es EduBot, un tuteur pédagogique d'élite pour lycéens. Tes réponses sont rigoureuses, structurées, claires, et rédigées dans un ton académique encourageant."}
+            ] + [{"role": m["role"], "content": m["content"]} for m in messages]
+
+            # Appel API Groq avec modèle stable
             chat_completion = client.chat.completions.create(
-               model="llama-3.1-70b-versatile",  # Modèle Llama 3 ultra puissant sur Groq
-                messages=[system_prompt] + messages
+                model="llama-3.1-70b-versatile",
+                messages=groq_messages
             )
             reply_text = chat_completion.choices[0].message.content
             st.markdown(reply_text)
