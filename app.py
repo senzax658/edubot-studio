@@ -149,13 +149,11 @@ if prompt := st.chat_input("Posez votre question de cours ou demandez un schéma
     with st.chat_message("assistant", avatar="🎓"):
         with st.spinner("EduBot prépare l'explication et la synthèse..."):
             
-            # Préparation de l'historique pour l'API
             groq_messages = [
                 {"role": "system", "content": "Tu es EduBot, un tuteur pédagogique d'élite pour lycéens. Tes réponses sont rigoureuses, structurées, claires, et rédigées dans un ton académique encourageant."}
             ] + [{"role": m["role"], "content": m["content"]} for m in messages]
 
-            # Appel API Groq avec modèle stable
-         chat_completion = client.chat.completions.create(
+            chat_completion = client.chat.completions.create(
                 model="gemma2-9b-it",
                 messages=groq_messages
             )
