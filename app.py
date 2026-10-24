@@ -46,7 +46,7 @@ def initialiser_client_groq():
         return None
     return Groq(api_key=api_key)
 
-client = Groq(api_key=st.secrets.get("GROQ_API_KEY")) if "GROQ_API_KEY" in st.secrets else None
+client = initialiser_client_groq()
 
 # ==========================================
 # 4. BARRE LATÉRALE (SIDEBAR)
@@ -57,10 +57,14 @@ with st.sidebar:
     st.markdown("---")
     
     st.markdown("### 🧠 Configuration du Modèle")
-    # Choix du modèle actif
+    # Modèles officiels supportés par Groq
     modele_selectionne = st.selectbox(
         "Modèle Groq",
-        ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+        [
+            "llama3-70b-8192",
+            "mixtral-8x7b-32768",
+            "gemma2-9b-it"
+        ],
         index=0
     )
     
@@ -78,7 +82,12 @@ with st.sidebar:
     
     # Bouton pour effacer l'historique
     if st.button("Effacer la conversation", type="primary", use_container_width=True):
-        st.session_state.messages = []
+        st.session_state.messages = [
+            {
+                "role": "assistant",
+                "content": "Bonjour ! Je suis ton tuteur EduBot. Comment puis-je t'aider dans tes révisions aujourd'hui ?"
+            }
+        ]
         st.rerun()
         
     st.markdown("---")
@@ -96,7 +105,7 @@ st.title("📚 EduBot Studio")
 st.caption("Ton assistant pédagogique personnel intelligent avec mémoire de session.")
 
 # Vérification de la clé API avant de lancer le chat
-if not client and not ("GROQ_API_KEY" in st.secrets):
+if not client:
     st.error(
         "⚠️ **Clé API Groq introuvable !** "
         "Veuillez configurer votre clé dans les **Secrets Streamlit** "
@@ -135,10 +144,16 @@ if prompt := st.chat_input("Écris ta question ici..."):
         message_placeholder.markdown("⏳ *Réflexion en cours...*")
         
         try:
+            # On nettoie l'historique pour l'envoi API (en ignorant le premier message de bienvenue si besoin)
+            messages_api = [
+                {"role": m["role"], "content": m["content"]} 
+                for m in st.session_state.messages
+            ]
+            
             # Appel à l'API Groq avec l'historique complet pour garder le contexte
             response = client.chat.completions.create(
                 model=modele_selectionne,
-                messages=st.session_state.messages,
+                messages=messages_api,
                 temperature=temperature
             )
             
