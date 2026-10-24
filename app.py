@@ -13,7 +13,7 @@ st.set_page_config(
 )
 
 # ==========================================
-# 2. CHARGEMENT DU STYLE CSS PERSONNALISÉ
+# 2. STYLE CSS PERSONNALISÉ
 # ==========================================
 st.markdown("""
     <style>
@@ -37,38 +37,47 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. GESTION DE LA SÉCURITÉ ET DE L'API GROQ
+# 3. SÉCURITÉ ET API GROQ
 # ==========================================
 def initialiser_client_groq():
-    """Récupère la clé API de manière sécurisée (Secrets Streamlit ou Environnement)"""
-    api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
+    """Récupère la clé API depuis Streamlit Secrets ou les variables d'environnement."""
+    api_key = None
+
+    try:
+        api_key = st.secrets.get("GROQ_API_KEY")
+    except Exception:
+        pass
+
+    api_key = api_key or os.environ.get("GROQ_API_KEY")
+
     if not api_key:
         return None
+
     return Groq(api_key=api_key)
+
 
 client = initialiser_client_groq()
 
 # ==========================================
-# 4. BARRE LATÉRALE (SIDEBAR)
+# 4. BARRE LATÉRALE
 # ==========================================
 with st.sidebar:
     st.image("https://img.icons8.com/color/96/bot.png", width=80)
     st.title("Paramètres EduBot")
     st.markdown("---")
-    
-    st.markdown("### 🧠 Configuration du Modèle")
-    # Modèles officiels supportés par Groq
+
+    st.markdown("### 🧠 Configuration du modèle")
+
     modele_selectionne = st.selectbox(
         "Modèle Groq",
         [
-            "llama3-70b-8192",
-            "mixtral-8x7b-32768",
-            "gemma2-9b-it"
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "qwen/qwen3.8-27b"
         ],
         index=0
     )
-    
-    # Contrôle de la créativité (Température)
+
     temperature = st.slider(
         "Créativité (Température)",
         min_value=0.0,
@@ -76,20 +85,22 @@ with st.sidebar:
         value=0.7,
         step=0.1
     )
-    
+
     st.markdown("---")
     st.markdown("### 🛠️ Gestion de la session")
-    
-    # Bouton pour effacer l'historique
+
     if st.button("Effacer la conversation", type="primary", use_container_width=True):
         st.session_state.messages = [
             {
                 "role": "assistant",
-                "content": "Bonjour ! Je suis ton tuteur EduBot. Comment puis-je t'aider dans tes révisions aujourd'hui ?"
+                "content": (
+                    "Bonjour ! Je suis ton tuteur EduBot. "
+                    "Comment puis-je t'aider dans tes révisions aujourd'hui ?"
+                )
             }
         ]
         st.rerun()
-        
+
     st.markdown("---")
     st.markdown("### ℹ️ À propos")
     st.info(
@@ -99,73 +110,73 @@ with st.sidebar:
     )
 
 # ==========================================
-# 5. CORPS DE L'APPLICATION (INTERFACE DE CHAT)
+# 5. INTERFACE DE CHAT
 # ==========================================
 st.title("📚 EduBot Studio")
 st.caption("Ton assistant pédagogique personnel intelligent avec mémoire de session.")
 
-# Vérification de la clé API avant de lancer le chat
 if not client:
     st.error(
         "⚠️ **Clé API Groq introuvable !** "
-        "Veuillez configurer votre clé dans les **Secrets Streamlit** "
-        "(`GROQ_API_KEY = \"gsk_...\"`)."
+        "Crée un fichier `.streamlit/secrets.toml` puis ajoute :\n\n"
+        "```toml\n"
+        "GROQ_API_KEY = \"gsk_...\"\n"
+        "```"
     )
     st.stop()
 
-# Initialisation de la session pour l'historique des messages
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {
             "role": "assistant",
-            "content": "Bonjour ! Je suis ton tuteur EduBot. Comment puis-je t'aider dans tes révisions aujourd'hui ?"
+            "content": (
+                "Bonjour ! Je suis ton tuteur EduBot. "
+                "Comment puis-je t'aider dans tes révisions aujourd'hui ?"
+            )
         }
     ]
 
-# Affichage de l'historique des messages dans l'interface
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 # ==========================================
-# 6. GESTION DES ENTRÉES UTILISATEUR ET REQUÊTES API
+# 6. ENTRÉE UTILISATEUR ET REQUÊTE API
 # ==========================================
 if prompt := st.chat_input("Écris ta question ici..."):
-    # Ajout du message utilisateur à l'historique de session
+
     st.session_state.messages.append({"role": "user", "content": prompt})
-    
-    # Affichage immédiat du message utilisateur
+
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Génération de la réponse de l'assistant
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         message_placeholder.markdown("⏳ *Réflexion en cours...*")
-        
+
         try:
-            # On nettoie l'historique pour l'envoi API (en ignorant le premier message de bienvenue si besoin)
             messages_api = [
-                {"role": m["role"], "content": m["content"]} 
-                for m in st.session_state.messages
+                {"role": message["role"], "content": message["content"]}
+                for message in st.session_state.messages
             ]
-            
-            # Appel à l'API Groq avec l'historique complet pour garder le contexte
+
             response = client.chat.completions.create(
                 model=modele_selectionne,
                 messages=messages_api,
                 temperature=temperature
             )
-            
-            # Récupération de la réponse renvoyée par le modèle
+
             reply = response.choices[0].message.content
+
             message_placeholder.markdown(reply)
-            
-            # Ajout de la réponse de l'assistant dans l'historique
-            st.session_state.messages.append({"role": "assistant", "content": reply})
-            
+            st.session_state.messages.append(
+                {"role": "assistant", "content": reply}
+            )
+
         except Exception as e:
-            message_placeholder.error(f"❌ Une erreur technique est survenue : {e}")
+            message_placeholder.error(
+                f"❌ Une erreur technique est survenue : {e}"
+            )
 
 # ==========================================
 # 7. PIED DE PAGE
