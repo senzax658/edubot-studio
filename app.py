@@ -155,10 +155,11 @@ if prompt := st.chat_input("Posez votre question de cours ou demandez un schéma
             ] + [{"role": m["role"], "content": m["content"]} for m in messages]
 
             # Appel API Groq avec modèle stable
-            chat_completion = client.chat.completions.create(
-                model="llama-3.1-70b-versatile",
+         chat_completion = client.chat.completions.create(
+                model="gemma2-9b-it",
                 messages=groq_messages
             )
+            
             reply_text = chat_completion.choices[0].message.content
             st.markdown(reply_text)
             
