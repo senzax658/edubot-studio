@@ -9,7 +9,7 @@ font = "sans serif"
 [theme.sidebar]
 primaryColor = "#A78BFA"
 backgroundColor = "#111626"
-secondaryBackgroundColor = "#202840"
+secondaryBackgroundColor = "#222D46"
 textColor = "#F1F5F9"
 
 [server]
