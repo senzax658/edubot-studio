@@ -1,0 +1,4 @@
+.streamlit/secrets.toml
+edubot_data/
+__pycache__/
+.env
