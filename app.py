@@ -1384,13 +1384,75 @@ if is_admin():
                     "dans les Secrets Streamlit."
                 )
 
-            except Exception as error:
-                st.error(
-                    "Connexion impossible. Vérifie les paramètres "
-                    "Session pooler : host, port, user et mot de passe."
-                )
+          except Exception as error:
+    # Le détail technique est utilisé pour classer l'erreur,
+    # mais n'est jamais affiché directement.
+    detail = str(error).lower()
+    sqlstate = getattr(error, "sqlstate", None)
 
-                logging.error(
-                    "Test Supabase échoué : %s",
-                    type(error).__name__,
-                )
+    if (
+        sqlstate == "28P01"
+        or "password authentication failed" in detail
+    ):
+        st.error(
+            "Identifiants refusés : vérifie le nom d'utilisateur "
+            "du Session pooler et le mot de passe de la base."
+        )
+
+    elif "tenant or user not found" in detail:
+        st.error(
+            "Projet ou utilisateur introuvable : recopie ensemble "
+            "le host et le user depuis le Session pooler "
+            "du même projet Supabase."
+        )
+
+    elif any(
+        text in detail
+        for text in [
+            "could not translate host name",
+            "name or service not known",
+            "getaddrinfo failed",
+            "failed to resolve host",
+            "nodename nor servname",
+        ]
+    ):
+        st.error(
+            "Le nom du serveur ne peut pas être trouvé. "
+            "Vérifie le champ host : il doit contenir uniquement "
+            "le nom du serveur copié depuis Supabase."
+        )
+
+    elif "timeout" in detail or "timed out" in detail:
+        st.error(
+            "Le serveur ne répond pas dans le délai prévu. "
+            "Vérifie que le projet Supabase est actif, "
+            "puis recopie le host et le port du Session pooler."
+        )
+
+    elif "network is unreachable" in detail:
+        st.error(
+            "Le réseau ne peut pas joindre cette adresse. "
+            "Vérifie que tu utilises bien le Session pooler, "
+            "pas la connexion directe."
+        )
+
+    elif "ssl" in detail or "certificate" in detail:
+        st.error(
+            "La connexion chiffrée a échoué. "
+            "Conserve sslmode='require' et vérifie "
+            "les paramètres du serveur."
+        )
+
+    else:
+        st.error(
+            "Échec non identifié automatiquement. "
+            "Type d'erreur : "
+            + type(error).__name__
+            + ". Il faudra examiner les journaux côté serveur."
+        )
+
+    logging.error(
+        "Test Supabase : type=%s sqlstate=%s",
+        type(error).__name__,
+        sqlstate,
+    )
