@@ -51,18 +51,9 @@ MODES = {
 }
 
 MODE_DESCRIPTIONS = {
-    "course": (
-        "Comprends une notion avec une explication claire, "
-        "un exemple et les points essentiels."
-    ),
-    "exercise": (
-        "Avance avec des indices progressifs. "
-        "Demande la correction complète quand tu en as besoin."
-    ),
-    "quiz": (
-        "Réponds à une question à la fois, "
-        "puis découvre une correction expliquée."
-    ),
+    "course": "Une explication claire, un exemple et les points essentiels.",
+    "exercise": "Des indices progressifs pour avancer dans ton exercice.",
+    "quiz": "Une question à la fois, puis une correction expliquée.",
 }
 
 PLACEHOLDERS = {
@@ -77,12 +68,12 @@ PHOTO_REQUESTS = {
         "avec un exemple et un résumé."
     ),
     "exercise": (
-        "Aide-moi à comprendre cet exercice. "
-        "Commence par un indice sans donner toute la correction."
+        "Aide-moi sur cet exercice. Commence par un indice "
+        "sans donner toute la correction."
     ),
     "quiz": (
-        "Crée un quiz de 5 questions à partir du contenu lisible "
-        "sur ces photos. Pose seulement la première question."
+        "Crée un quiz de 5 questions sur le contenu lisible "
+        "de ces photos. Pose seulement la première question."
     ),
 }
 
@@ -90,18 +81,18 @@ SYSTEM_PROMPT = r"""
 Tu es EduBot, un assistant pédagogique francophone.
 
 - Aide l'élève à comprendre et à progresser.
-- Adapte les explications au niveau indiqué.
+- Adapte tes explications au niveau indiqué.
 - Explique les étapes importantes.
 - Demande une précision si nécessaire.
 - Signale tes incertitudes et n'invente pas de faits.
 - Utilise du Markdown simple.
-- Pour les formules en ligne, utilise $...$.
-- Pour les équations séparées, utilise $$...$$.
+- Écris les formules en ligne avec $...$.
+- Écris les équations séparées avec $$...$$.
 - Ne produis pas de Mermaid, HTML ou SVG.
 - Ne prétends pas générer des images.
 
 Photos :
-- Tu peux analyser les photos jointes au message courant.
+- Analyse uniquement les photos jointes au message courant.
 - Ne devine pas les mots ou nombres illisibles.
 - Demande une photo plus nette si nécessaire.
 - Les anciennes photos ne sont pas retransmises.
@@ -111,55 +102,42 @@ Photos :
 MODE_PROMPTS = {
     "course": """
 MODE : COMPRENDRE MON COURS
-
-Pour une nouvelle explication :
-1. Présente simplement l'idée essentielle.
-2. Explique progressivement les notions importantes.
-3. Donne un exemple concret ou résolu.
-4. Signale une erreur fréquente si utile.
-5. Termine par un résumé court.
-
+Présente l'idée essentielle, explique progressivement,
+donne un exemple et termine par un résumé court.
 Tu peux poser une question de compréhension.
-Ne répète pas toutes les rubriques pour une simple question de suivi.
+Ne répète pas toutes ces rubriques pour une simple question de suivi.
 """,
     "exercise": """
 MODE : M'AIDER SUR UN EXERCICE
-
-- Vérifie que l'énoncé est complet et lisible.
-- Prends en compte la tentative de l'élève.
-- Commence par un indice ou une première étape.
-- Invite l'élève à essayer la suite.
-- Corrige les erreurs précisément et sans le décourager.
-- Ne donne pas immédiatement toute la solution.
-- Si l'élève demande explicitement la correction complète,
-  donne-la avec les étapes.
+Vérifie que l'énoncé est complet et lisible.
+Prends en compte la tentative de l'élève.
+Commence par un indice ou une première étape.
+Invite l'élève à essayer la suite.
+Corrige les erreurs précisément, sans le décourager.
+Ne donne toute la correction que si l'élève la demande explicitement.
 """,
     "quiz": """
 MODE : ME TESTER
-
-- Si le thème est absent, demande-le.
-- Utilise le niveau indiqué.
-- Propose 5 questions par défaut, 10 maximum par série.
-- Pose UNE question à la fois.
-- Numérote les questions : Question 1/5, etc.
-- Par défaut, propose un QCM avec les choix A, B, C et D.
-- Ne révèle pas la bonne réponse avant la réponse de l'élève.
-- Attends sa réponse.
-- Si elle est ambiguë, demande une précision sans la noter.
-- Après sa réponse, indique si elle est correcte et explique pourquoi.
-- Pose ensuite la question suivante.
-- Compte seulement les réponses réellement données.
-- Si l'élève veut passer, explique la réponse et compte la question
-  comme non réussie.
-- À la fin, donne le score et les notions à retravailler.
-- Ne recommence pas automatiquement.
-- Si le contexte ne permet pas un score fiable, dis-le.
+Si le thème est absent, demande-le.
+Utilise le niveau indiqué.
+Propose 5 questions par défaut, 10 maximum par série.
+Pose UNE question à la fois et numérote-la.
+Par défaut, utilise un QCM avec les choix A, B, C et D.
+Ne révèle pas la réponse avant la réponse de l'élève.
+Attends sa réponse avant de continuer.
+Si elle est ambiguë, demande une précision sans la noter.
+Après sa réponse, indique si elle est correcte et explique pourquoi.
+Pose ensuite la question suivante.
+Compte seulement les réponses réellement données.
+À la fin, donne le score et les notions à retravailler.
+Si tu ne peux pas compter de manière fiable, dis-le.
+Ne relance pas automatiquement une nouvelle série.
 """,
 }
 
 
 # ============================================================
-# 2. INTERFACE ET COULEURS
+# 2. STYLE
 # ============================================================
 
 st.markdown(
@@ -218,9 +196,7 @@ st.markdown(
         padding: 20px;
         margin-bottom: 16px;
     }
-    [data-testid="stChatMessageContent"] {
-        color: #f1f5f9 !important;
-    }
+
     [data-testid="stMarkdownContainer"] table {
         width: 100%;
         border-collapse: collapse;
@@ -330,6 +306,7 @@ st.markdown(
         letter-spacing: 2px;
         margin-bottom: 12px;
     }
+
     @media (max-width: 640px) {
         .hero { padding: 22px; }
         [data-testid="stChatMessage"] { padding: 14px; }
@@ -355,7 +332,7 @@ st.markdown(
 
 
 # ============================================================
-# 3. CONNEXION GOOGLE ET ADMINISTRATEUR
+# 3. GOOGLE ET IDENTITÉ ADMINISTRATEUR
 # ============================================================
 
 try:
@@ -375,20 +352,19 @@ required_fields = [
 if not all(auth.get(field) for field in required_fields):
     st.warning(
         "Complète la section [auth] dans les Secrets Streamlit "
-        "pour activer la connexion Google."
+        "pour activer Google."
     )
     st.stop()
 
 if not st.user.get("is_logged_in", False):
     st.session_state.clear()
-    _, center, _ = st.columns([1, 2, 1])
 
+    _, center, _ = st.columns([1, 2, 1])
     with center:
         with st.container(border=True):
             st.subheader("Bienvenue dans ton espace ✨")
             st.write(
-                "Connecte-toi pour retrouver tes discussions "
-                "et ton quota de photos."
+                "Connecte-toi pour retrouver tes discussions."
             )
             st.button(
                 "Continuer avec Google",
@@ -396,14 +372,15 @@ if not st.user.get("is_logged_in", False):
                 type="primary",
                 use_container_width=True,
             )
-            st.caption("EduBot ne reçoit pas ton mot de passe Google.")
-
+            st.caption(
+                "EduBot ne reçoit pas ton mot de passe Google."
+            )
     st.stop()
 
 google_sub = str(st.user.get("sub", "")).strip()
 
 if not google_sub:
-    st.error("L'identifiant du compte Google est absent.")
+    st.error("L'identifiant Google est absent.")
     st.button("Se déconnecter", on_click=st.logout)
     st.stop()
 
@@ -423,14 +400,14 @@ def is_admin():
     ).strip()
 
     return (
-        st.user.get("is_logged_in", False)
+        bool(st.user.get("is_logged_in", False))
         and bool(allowed)
         and google_sub == allowed
     )
 
 
 # ============================================================
-# 4. BASE SQLITE
+# 4. BASE SQLITE ACTUELLE
 # ============================================================
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -499,7 +476,7 @@ with database() as connection:
         );
     """)
 
-    # Colonnes conservées pour compatibilité avec l'ancienne base.
+    # Compatibilité avec la base existante.
     # Aucun mot de passe Google n'est enregistré.
     connection.execute(
         """
@@ -528,7 +505,7 @@ if st.session_state.get("identity") != user_id:
 
 
 # ============================================================
-# 5. DISCUSSIONS ET LIMITES
+# 5. DISCUSSIONS ET QUOTAS
 # ============================================================
 
 def get_chats():
@@ -708,7 +685,6 @@ def save_reply(chat_id, reply):
             """,
             (chat_id, reply),
         )
-
         connection.execute(
             "UPDATE chats SET updated_at = ? WHERE id = ?",
             (now(), chat_id),
@@ -716,7 +692,7 @@ def save_reply(chat_id, reply):
 
 
 # ============================================================
-# 6. FORMATAGE, PHOTOS ET ERREURS
+# 6. FORMATAGE ET PHOTOS
 # ============================================================
 
 def clean_text(text):
@@ -773,6 +749,7 @@ def prepare_image(upload):
             with Image.open(io.BytesIO(raw)) as source:
                 image = ImageOps.exif_transpose(source).convert("RGB")
                 image.thumbnail((1600, 1600))
+
                 output = io.BytesIO()
                 image.save(output, format="JPEG", quality=85)
                 return output.getvalue()
@@ -810,169 +787,347 @@ def api_error_message(error):
 
 
 # ============================================================
-# 7. STATISTIQUES PRIVÉES
+# 7. DIAGNOSTIC SUPABASE
 # ============================================================
 
-def load_statistics():
+def show_supabase_test():
     if not is_admin():
-        raise PermissionError("Accès administrateur requis.")
+        st.error("Accès non autorisé.")
+        return
 
-    end_day = date.fromisoformat(today())
-    start_day = end_day - timedelta(days=29)
+    st.subheader("🔧 Connexion à Supabase")
+    st.write(
+        "Ce test vérifie seulement la connexion PostgreSQL. "
+        "Il ne déplace pas les discussions et ne modifie aucune table."
+    )
 
-    with database() as connection:
-        accounts = connection.execute(
-            "SELECT COUNT(*) FROM users"
-        ).fetchone()[0]
+    config = secrets.get("database", {})
+    required = ["host", "user", "password"]
 
-        participating_accounts = connection.execute(
-            "SELECT COUNT(DISTINCT user_id) FROM chats"
-        ).fetchone()[0]
+    missing = [
+        field
+        for field in required
+        if not str(config.get(field, "")).strip()
+    ]
 
-        discussions = connection.execute(
-            "SELECT COUNT(*) FROM chats"
-        ).fetchone()[0]
+    if missing:
+        st.warning(
+            "Champs absents dans [database] : "
+            + ", ".join(missing)
+        )
+        return
 
-        messages = connection.execute(
-            "SELECT COUNT(*) FROM messages WHERE role = 'user'"
-        ).fetchone()[0]
+    host = str(config["host"]).strip()
 
-        photos = connection.execute(
-            """
-            SELECT COUNT(*) FROM messages
-            WHERE role = 'attachment' AND image IS NOT NULL
-            """
-        ).fetchone()[0]
+    # Vérifie la forme sans afficher les valeurs privées.
+    if (
+        "://" in host
+        or "/" in host
+        or "@" in host
+        or ":" in host
+        or any(character.isspace() for character in host)
+    ):
+        st.error(
+            "Le champ host doit contenir uniquement le nom du serveur. "
+            "Retire postgresql://, le port, le chemin et les espaces."
+        )
+        return
 
-        mode_rows = connection.execute(
-            """
-            SELECT COALESCE(cm.mode, 'course') AS mode,
-                   COUNT(*) AS total
-            FROM chats c
-            LEFT JOIN chat_modes cm ON cm.chat_id = c.id
-            GROUP BY COALESCE(cm.mode, 'course')
-            """
-        ).fetchall()
+    password = str(config["password"])
 
-        photo_rows = connection.execute(
-            """
-            SELECT day, SUM(count) AS total
-            FROM usage
-            WHERE day BETWEEN ? AND ?
-            GROUP BY day
-            ORDER BY day
-            """,
-            (start_day.isoformat(), end_day.isoformat()),
-        ).fetchall()
+    if password in {
+        "[YOUR-PASSWORD]",
+        "YOUR-PASSWORD",
+        "TON_MOT_DE_PASSE_DE_BASE",
+        "TON_VRAI_MOT_DE_PASSE_DE_BASE",
+    }:
+        st.error(
+            "Le champ password contient encore un exemple. "
+            "Remplace-le par le vrai mot de passe de la base."
+        )
+        return
 
-    modes = {"course": 0, "exercise": 0, "quiz": 0}
-    for row in mode_rows:
-        if row["mode"] in modes:
-            modes[row["mode"]] += int(row["total"])
+    try:
+        port = int(config.get("port", 5432))
+    except (ValueError, TypeError):
+        st.error("Le port doit être un nombre, par exemple 5432.")
+        return
 
-    photo_counts = {
-        row["day"]: int(row["total"])
-        for row in photo_rows
-    }
-    days = [start_day + timedelta(days=n) for n in range(30)]
+    if not 1 <= port <= 65535:
+        st.error("Le port est invalide.")
+        return
 
-    return {
-        "accounts": accounts,
-        "participating_accounts": participating_accounts,
-        "discussions": discussions,
-        "messages": messages,
-        "photos": photos,
-        "modes": modes,
-        "daily_photos": {
-            "Date": [day.isoformat() for day in days],
-            "Photos": [
-                photo_counts.get(day.isoformat(), 0)
-                for day in days
-            ],
-        },
-    }
+    st.caption(
+        "Aucun mot de passe ni adresse complète de connexion "
+        "ne sera affiché dans le diagnostic."
+    )
 
+    if not st.button(
+        "Tester la connexion à Supabase",
+        type="primary",
+    ):
+        return
+
+    try:
+        import psycopg
+    except ImportError:
+        st.error(
+            "La bibliothèque psycopg manque. Ajoute "
+            "psycopg[binary]>=3.2,<4 dans requirements.txt "
+            "et attends le redéploiement."
+        )
+        return
+
+    try:
+        with st.spinner("Vérification de la connexion…"):
+            with psycopg.connect(
+                host=host,
+                port=port,
+                dbname=str(config.get("dbname", "postgres")).strip(),
+                user=str(config["user"]).strip(),
+                password=password,
+                sslmode="require",
+                connect_timeout=10,
+            ) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                    result = cursor.fetchone()
+
+        if result == (1,):
+            st.success(
+                "Connexion réussie : EduBot peut accéder à Supabase !"
+            )
+            st.info(
+                "La prochaine étape sera d'adapter la sauvegarde "
+                "à PostgreSQL. L'application utilise encore SQLite."
+            )
+        else:
+            st.error("La base a renvoyé une réponse inattendue.")
+
+    except Exception as error:
+        # Le détail est analysé localement mais jamais affiché brut.
+        detail = str(error).lower()
+        sqlstate = getattr(error, "sqlstate", None)
+
+        if "tenant or user not found" in detail:
+            message = (
+                "Projet ou utilisateur introuvable : recopie ensemble "
+                "le host et le user depuis le Session pooler "
+                "du même projet Supabase."
+            )
+
+        elif (
+            sqlstate == "28P01"
+            or "password authentication failed" in detail
+        ):
+            message = (
+                "Identifiants refusés : vérifie le user du Session "
+                "pooler et le mot de passe de la base."
+            )
+
+        elif any(
+            text in detail
+            for text in [
+                "could not translate host name",
+                "name or service not known",
+                "getaddrinfo failed",
+                "failed to resolve host",
+                "nodename nor servname",
+            ]
+        ):
+            message = (
+                "Le serveur ne peut pas être trouvé. "
+                "Vérifie le champ host : copie uniquement "
+                "le nom du serveur indiqué par Supabase."
+            )
+
+        elif "network is unreachable" in detail:
+            message = (
+                "Le réseau ne peut pas joindre cette adresse. "
+                "Vérifie que tu utilises le Session pooler "
+                "et non la connexion directe."
+            )
+
+        elif "timeout" in detail or "timed out" in detail:
+            message = (
+                "Le serveur ne répond pas dans le délai prévu. "
+                "Vérifie que le projet Supabase est actif, "
+                "puis le host et le port du Session pooler."
+            )
+
+        elif "connection refused" in detail:
+            message = (
+                "La connexion est refusée. Vérifie que le projet "
+                "est actif et que le host et le port correspondent."
+            )
+
+        elif "ssl" in detail or "certificate" in detail:
+            message = (
+                "La connexion chiffrée a échoué. "
+                "Conserve sslmode='require' et vérifie le serveur."
+            )
+
+        else:
+            message = (
+                "Échec non identifié automatiquement. "
+                f"Type d'erreur : {type(error).__name__}. "
+                "Un diagnostic côté serveur sera nécessaire."
+            )
+
+        st.error(message)
+
+        if sqlstate:
+            st.caption(f"Code PostgreSQL : {sqlstate}")
+
+        LOGGER.error(
+            "Test Supabase : type=%s sqlstate=%s",
+            type(error).__name__,
+            sqlstate,
+        )
+
+
+# ============================================================
+# 8. STATISTIQUES PRIVÉES
+# ============================================================
 
 def show_statistics():
     if not is_admin():
         st.error("Accès non autorisé.")
-        st.stop()
+        return
 
     st.subheader("📊 Statistiques EduBot")
     st.caption(
-        "Tableau privé. Aucun contenu de message, aucune photo "
-        "et aucune liste d'adresses e-mail ne sont affichés."
+        "Compteurs uniquement : aucun contenu de conversation, "
+        "aucune photo et aucune liste d'e-mails."
     )
 
     if st.button("Actualiser les statistiques"):
         st.rerun()
 
+    end_day = date.fromisoformat(today())
+    start_day = end_day - timedelta(days=29)
+
     try:
-        stats = load_statistics()
+        with database() as connection:
+            accounts = connection.execute(
+                "SELECT COUNT(*) FROM users"
+            ).fetchone()[0]
+
+            participating = connection.execute(
+                "SELECT COUNT(DISTINCT user_id) FROM chats"
+            ).fetchone()[0]
+
+            chats_count = connection.execute(
+                "SELECT COUNT(*) FROM chats"
+            ).fetchone()[0]
+
+            messages_count = connection.execute(
+                "SELECT COUNT(*) FROM messages WHERE role = 'user'"
+            ).fetchone()[0]
+
+            photos_count = connection.execute(
+                """
+                SELECT COUNT(*) FROM messages
+                WHERE role = 'attachment' AND image IS NOT NULL
+                """
+            ).fetchone()[0]
+
+            modes_rows = connection.execute(
+                """
+                SELECT COALESCE(cm.mode, 'course') AS mode,
+                       COUNT(*) AS total
+                FROM chats c
+                LEFT JOIN chat_modes cm ON cm.chat_id = c.id
+                GROUP BY COALESCE(cm.mode, 'course')
+                """
+            ).fetchall()
+
+            photo_rows = connection.execute(
+                """
+                SELECT day, SUM(count) AS total
+                FROM usage
+                WHERE day BETWEEN ? AND ?
+                GROUP BY day
+                ORDER BY day
+                """,
+                (start_day.isoformat(), end_day.isoformat()),
+            ).fetchall()
+
+        a, b, c = st.columns(3)
+        a.metric("Comptes enregistrés", accounts)
+        b.metric("Comptes avec une discussion", participating)
+        c.metric("Discussions", chats_count)
+
+        d, e = st.columns(2)
+        d.metric("Messages utilisateurs", messages_count)
+        e.metric("Photos enregistrées", photos_count)
+
+        counts = {"course": 0, "exercise": 0, "quiz": 0}
+        for row in modes_rows:
+            if row["mode"] in counts:
+                counts[row["mode"]] += int(row["total"])
+
+        st.subheader("Répartition des discussions")
+
+        if chats_count:
+            st.bar_chart(
+                {
+                    "Mode": ["Cours", "Exercices", "Quiz"],
+                    "Discussions": [
+                        counts["course"],
+                        counts["exercise"],
+                        counts["quiz"],
+                    ],
+                },
+                x="Mode",
+                y="Discussions",
+            )
+        else:
+            st.info("Aucune discussion enregistrée.")
+
+        st.caption(
+            "Classement selon le mode actuel de la discussion. "
+            "Les anciennes discussions sans mode sont classées dans Cours."
+        )
+
+        per_day = {
+            row["day"]: int(row["total"])
+            for row in photo_rows
+        }
+        days = [start_day + timedelta(days=n) for n in range(30)]
+
+        st.subheader("Photos soumises — 30 derniers jours")
+        st.bar_chart(
+            {
+                "Date": [day.isoformat() for day in days],
+                "Photos": [
+                    per_day.get(day.isoformat(), 0)
+                    for day in days
+                ],
+            },
+            x="Date",
+            y="Photos",
+        )
+
+        st.info(
+            "Ces chiffres concernent les données présentes dans SQLite. "
+            "Ils ne mesurent pas les visiteurs anonymes "
+            "ni les personnes actuellement en ligne."
+        )
+        st.caption(
+            "Les anciens comptes locaux sont inclus. Les messages "
+            "et photos restent comptés même si Groq échoue. "
+            "Les dates des messages ne sont pas enregistrées "
+            "dans le schéma actuel."
+        )
+
     except Exception as error:
         LOGGER.error("Statistiques : %s", type(error).__name__)
         st.error("Impossible de charger les statistiques.")
-        return
-
-    a, b, c = st.columns(3)
-    a.metric("Comptes enregistrés", stats["accounts"])
-    b.metric(
-        "Comptes ayant une discussion",
-        stats["participating_accounts"],
-    )
-    c.metric("Discussions", stats["discussions"])
-
-    d, e = st.columns(2)
-    d.metric("Messages utilisateurs", stats["messages"])
-    e.metric("Photos enregistrées", stats["photos"])
-
-    st.divider()
-    st.subheader("Répartition des discussions")
-
-    if stats["discussions"]:
-        st.bar_chart(
-            {
-                "Mode": ["Cours", "Exercices", "Quiz"],
-                "Discussions": [
-                    stats["modes"]["course"],
-                    stats["modes"]["exercise"],
-                    stats["modes"]["quiz"],
-                ],
-            },
-            x="Mode",
-            y="Discussions",
-        )
-    else:
-        st.info("Aucune discussion enregistrée.")
-
-    st.caption(
-        "Chaque discussion est classée selon son mode actuel. "
-        "Les anciennes discussions sans mode sont classées dans Cours."
-    )
-
-    st.subheader("Photos soumises — 30 derniers jours")
-    st.bar_chart(stats["daily_photos"], x="Date", y="Photos")
-
-    st.caption(
-        "Dates selon l'heure de Paris. Les photos soumises restent "
-        "comptées même si leur analyse échoue."
-    )
-
-    st.info(
-        "Ces statistiques portent sur les données encore présentes "
-        "dans la base. Elles ne mesurent pas les visiteurs anonymes "
-        "ni les personnes actuellement en ligne."
-    )
-    st.caption(
-        "Les anciens comptes locaux sont inclus. Les messages sont "
-        "comptés même si Groq n'a pas répondu. Les dates des messages "
-        "ne sont pas enregistrées dans le schéma actuel : aucun "
-        "graphique de messages par jour n'est donc présenté."
-    )
 
 
 # ============================================================
-# 8. BARRE LATÉRALE
+# 9. NAVIGATION
 # ============================================================
 
 chats = get_chats()
@@ -980,22 +1135,22 @@ chats = get_chats()
 with st.sidebar:
     st.title("🎓 Mon espace")
     st.write(f"Bonjour, {display_name} 👋")
+
     if email:
         st.caption(email)
 
-    # Chaque utilisateur voit uniquement son propre identifiant.
-    # Cet identifiant ne donne pas les droits administrateur.
     with st.expander("⚙️ Mon compte"):
-        st.caption(
-            "Identifiant Google de ton compte. "
-            "Utile au propriétaire pour configurer son accès admin."
-        )
+        st.caption("Identifiant Google de ton propre compte :")
         st.code(google_sub, language=None)
 
     if is_admin():
         page = st.radio(
             "Navigation",
-            ["💬 Assistant", "📊 Statistiques"],
+            [
+                "💬 Assistant",
+                "📊 Statistiques",
+                "🔧 Test Supabase",
+            ],
             key="navigation",
         )
     else:
@@ -1021,6 +1176,7 @@ with st.sidebar:
 
         st.divider()
         st.subheader("💬 Mes discussions")
+
         search = st.text_input(
             "Rechercher un thème",
             placeholder="Maths, français, histoire…",
@@ -1035,6 +1191,7 @@ with st.sidebar:
 
         for chat in visible_chats:
             icon = icons.get(chat["mode"], "💬")
+
             if st.session_state.get("chat_id") == chat["id"]:
                 icon = "📌"
 
@@ -1054,14 +1211,19 @@ with st.sidebar:
             )
 
     st.divider()
+
     if st.button("🚪 Me déconnecter", use_container_width=True):
         st.session_state.clear()
         st.logout()
 
 
 # ============================================================
-# 9. PAGE ADMINISTRATEUR
+# 10. PAGES ADMINISTRATEUR
 # ============================================================
+
+if page == "🔧 Test Supabase":
+    show_supabase_test()
+    st.stop()
 
 if page == "📊 Statistiques":
     show_statistics()
@@ -1069,10 +1231,11 @@ if page == "📊 Statistiques":
 
 
 # ============================================================
-# 10. PAGE ASSISTANT
+# 11. PAGE ASSISTANT
 # ============================================================
 
 chat_id = st.session_state.get("chat_id")
+
 active_chat = next(
     (chat for chat in chats if chat["id"] == chat_id),
     None,
@@ -1145,11 +1308,11 @@ else:
         ),
         "exercise": (
             "🧩 On avance ensemble",
-            "Ajoute l'énoncé et, si possible, ta tentative.",
+            "Ajoute l'énoncé et ta tentative si tu as commencé.",
         ),
         "quiz": (
             "🎯 À toi de jouer",
-            "Indique un chapitre et ton niveau pour commencer.",
+            "Indique le chapitre et ton niveau.",
         ),
     }
     title, description = welcome[selected_mode]
@@ -1158,14 +1321,14 @@ else:
 
 if selected_mode == "quiz":
     st.caption(
-        "Le quiz se déroule dans le chat. Son score est suivi par l'IA : "
-        "il s'agit d'un entraînement, pas d'une notation officielle."
+        "Le score est suivi par l'IA dans la conversation : "
+        "c'est un entraînement, pas une notation officielle."
     )
 
 st.caption(
-    "📎 JPG, PNG ou WebP • 5 Mo par image. Les photos et messages "
-    "sont conservés pour l'historique. Les éléments nécessaires "
-    "à la réponse sont transmis à Groq."
+    "📎 JPG, PNG ou WebP • 5 Mo par image. "
+    "Messages et photos sont enregistrés pour ton historique. "
+    "Les éléments nécessaires à la réponse sont transmis à Groq."
 )
 
 for message in history:
@@ -1173,20 +1336,24 @@ for message in history:
         st.image(message["image"], width=320)
     else:
         avatar = "🎓" if message["role"] == "assistant" else "👤"
+
         with st.chat_message(message["role"], avatar=avatar):
             content = message["content"]
+
             if message["role"] == "assistant":
                 content = clean_text(content)
+
             st.markdown(content)
 
 sent_count = sum(
-    1 for message in history if message["role"] == "user"
+    1 for message in history
+    if message["role"] == "user"
 )
 limit_reached = sent_count >= CHAT_MESSAGE_LIMIT
 
 st.caption(
-    f"{sent_count} / {CHAT_MESSAGE_LIMIT} messages envoyés "
-    "dans cette discussion."
+    f"{sent_count} / {CHAT_MESSAGE_LIMIT} messages "
+    "envoyés dans cette discussion."
 )
 
 if limit_reached:
@@ -1205,7 +1372,7 @@ if not api_key:
 
 
 # ============================================================
-# 11. ENVOI ET RÉPONSE GROQ
+# 12. APPEL GROQ
 # ============================================================
 
 submission = st.chat_input(
@@ -1258,6 +1425,7 @@ if submission:
             st.image(image, width=320)
 
     context_limit = 50 if selected_mode == "quiz" else 20
+
     previous = [
         {
             "role": message["role"],
@@ -1273,6 +1441,7 @@ if submission:
 
     if images:
         content = [{"type": "text", "text": text}]
+
         for image in images:
             encoded = base64.b64encode(image).decode("ascii")
             content.append({
@@ -1281,6 +1450,7 @@ if submission:
                     "url": f"data:image/jpeg;base64,{encoded}"
                 },
             })
+
         model = VISION_MODEL
     else:
         content = text
@@ -1308,6 +1478,7 @@ if submission:
                 temperature=0.3,
                 max_completion_tokens=2500,
             )
+
             reply = clean_text(result.choices[0].message.content)
 
             if not reply:
@@ -1321,9 +1492,10 @@ if submission:
             type(error).__name__,
             getattr(error, "status_code", None),
         )
+
         st.session_state.notice = (
             api_error_message(error)
-            + " Le message et les photos soumis restent enregistrés "
+            + " Les messages et photos soumis restent enregistrés "
             "et comptés dans les limites."
         )
 
@@ -1334,125 +1506,3 @@ st.caption(
     "EduBot Studio • Comprendre plutôt que recopier • "
     "Les réponses peuvent contenir des erreurs."
 )
-# ============================================================
-# TEST SUPABASE — VISIBLE UNIQUEMENT PAR L'ADMINISTRATEUR
-# ============================================================
-
-if is_admin():
-    with st.expander("🔧 Tester la connexion à Supabase"):
-        st.caption(
-            "Ce test ne modifie aucune donnée "
-            "et ne transfère pas les discussions."
-        )
-
-        if st.button("Tester Supabase", key="test_supabase"):
-            try:
-                import psycopg
-
-                config = st.secrets["database"]
-
-                with psycopg.connect(
-                    host=config["host"],
-                    port=int(config.get("port", 5432)),
-                    dbname=config.get("dbname", "postgres"),
-                    user=config["user"],
-                    password=config["password"],
-                    sslmode="require",
-                    connect_timeout=10,
-                ) as connection:
-                    with connection.cursor() as cursor:
-                        cursor.execute("SELECT 1")
-                        result = cursor.fetchone()
-
-                if result == (1,):
-                    st.success(
-                        "Connexion réussie : EduBot peut accéder à Supabase !"
-                    )
-                else:
-                    st.error("La base a renvoyé une réponse inattendue.")
-
-            except ImportError:
-                st.error(
-                    "La bibliothèque psycopg manque. "
-                    "Vérifie requirements.txt et attends "
-                    "la fin du redéploiement."
-                )
-
-            except KeyError:
-                st.error(
-                    "La section [database] est absente ou incomplète "
-                    "dans les Secrets Streamlit."
-                )
-
-          except Exception as error:
-    # Le détail technique est utilisé pour classer l'erreur,
-    # mais n'est jamais affiché directement.
-    detail = str(error).lower()
-    sqlstate = getattr(error, "sqlstate", None)
-
-    if (
-        sqlstate == "28P01"
-        or "password authentication failed" in detail
-    ):
-        st.error(
-            "Identifiants refusés : vérifie le nom d'utilisateur "
-            "du Session pooler et le mot de passe de la base."
-        )
-
-    elif "tenant or user not found" in detail:
-        st.error(
-            "Projet ou utilisateur introuvable : recopie ensemble "
-            "le host et le user depuis le Session pooler "
-            "du même projet Supabase."
-        )
-
-    elif any(
-        text in detail
-        for text in [
-            "could not translate host name",
-            "name or service not known",
-            "getaddrinfo failed",
-            "failed to resolve host",
-            "nodename nor servname",
-        ]
-    ):
-        st.error(
-            "Le nom du serveur ne peut pas être trouvé. "
-            "Vérifie le champ host : il doit contenir uniquement "
-            "le nom du serveur copié depuis Supabase."
-        )
-
-    elif "timeout" in detail or "timed out" in detail:
-        st.error(
-            "Le serveur ne répond pas dans le délai prévu. "
-            "Vérifie que le projet Supabase est actif, "
-            "puis recopie le host et le port du Session pooler."
-        )
-
-    elif "network is unreachable" in detail:
-        st.error(
-            "Le réseau ne peut pas joindre cette adresse. "
-            "Vérifie que tu utilises bien le Session pooler, "
-            "pas la connexion directe."
-        )
-
-    elif "ssl" in detail or "certificate" in detail:
-        st.error(
-            "La connexion chiffrée a échoué. "
-            "Conserve sslmode='require' et vérifie "
-            "les paramètres du serveur."
-        )
-
-    else:
-        st.error(
-            "Échec non identifié automatiquement. "
-            "Type d'erreur : "
-            + type(error).__name__
-            + ". Il faudra examiner les journaux côté serveur."
-        )
-
-    logging.error(
-        "Test Supabase : type=%s sqlstate=%s",
-        type(error).__name__,
-        sqlstate,
-    )
