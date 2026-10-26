@@ -1334,3 +1334,63 @@ st.caption(
     "EduBot Studio • Comprendre plutôt que recopier • "
     "Les réponses peuvent contenir des erreurs."
 )
+# ============================================================
+# TEST SUPABASE — VISIBLE UNIQUEMENT PAR L'ADMINISTRATEUR
+# ============================================================
+
+if is_admin():
+    with st.expander("🔧 Tester la connexion à Supabase"):
+        st.caption(
+            "Ce test ne modifie aucune donnée "
+            "et ne transfère pas les discussions."
+        )
+
+        if st.button("Tester Supabase", key="test_supabase"):
+            try:
+                import psycopg
+
+                config = st.secrets["database"]
+
+                with psycopg.connect(
+                    host=config["host"],
+                    port=int(config.get("port", 5432)),
+                    dbname=config.get("dbname", "postgres"),
+                    user=config["user"],
+                    password=config["password"],
+                    sslmode="require",
+                    connect_timeout=10,
+                ) as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT 1")
+                        result = cursor.fetchone()
+
+                if result == (1,):
+                    st.success(
+                        "Connexion réussie : EduBot peut accéder à Supabase !"
+                    )
+                else:
+                    st.error("La base a renvoyé une réponse inattendue.")
+
+            except ImportError:
+                st.error(
+                    "La bibliothèque psycopg manque. "
+                    "Vérifie requirements.txt et attends "
+                    "la fin du redéploiement."
+                )
+
+            except KeyError:
+                st.error(
+                    "La section [database] est absente ou incomplète "
+                    "dans les Secrets Streamlit."
+                )
+
+            except Exception as error:
+                st.error(
+                    "Connexion impossible. Vérifie les paramètres "
+                    "Session pooler : host, port, user et mot de passe."
+                )
+
+                logging.error(
+                    "Test Supabase échoué : %s",
+                    type(error).__name__,
+                )
