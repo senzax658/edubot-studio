@@ -2,3 +2,4 @@ streamlit[auth]>=1.53
 groq
 pillow
 tzdata
+psycopg[binary]>=3.2,<4
