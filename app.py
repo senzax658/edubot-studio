@@ -7,7 +7,8 @@ import sqlite3
 import uuid
 import warnings
 
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -29,13 +30,13 @@ st.set_page_config(
 )
 
 LOGGER = logging.getLogger(__name__)
-
 PARIS = ZoneInfo("Europe/Paris")
 
 DATA_DIR = Path(os.environ.get("EDUBOT_DATA_DIR", "edubot_data"))
 DB_PATH = DATA_DIR / "edubot.sqlite3"
 
-DAILY_LIMIT = 3
+DAILY_IMAGE_LIMIT = 3
+CHAT_MESSAGE_LIMIT = 20
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 Image.MAX_IMAGE_PIXELS = 20_000_000
@@ -43,40 +44,7 @@ Image.MAX_IMAGE_PIXELS = 20_000_000
 TEXT_MODEL = "openai/gpt-oss-20b"
 VISION_MODEL = "qwen/qwen3.8-27b"
 
-
-# ============================================================
-# 2. CONSIGNES DE L'ASSISTANT
-# ============================================================
-
-SYSTEM_PROMPT = r"""
-Tu es EduBot, un assistant pédagogique francophone.
-
-Ta mission :
-- Aider l'élève à comprendre ses cours et ses exercices.
-- Expliquer clairement les étapes importantes.
-- Adapter ton vocabulaire au niveau demandé.
-- Demander une précision si une information manque.
-- Signaler les incertitudes et ne pas inventer de faits.
-- Être encourageant sans être excessivement familier.
-
-Présentation :
-- Utilise des titres courts, des paragraphes et des listes.
-- Utilise des tableaux Markdown quand ils sont utiles.
-- Pour les mathématiques en ligne, utilise $...$.
-- Pour une équation séparée, utilise $$...$$.
-- Ne produis jamais de Mermaid, de HTML ou de SVG.
-- Ne prétends jamais générer ou joindre une image.
-
-Photos :
-- Tu peux analyser les photos jointes au message courant.
-- Si une photo est illisible, demande une meilleure image.
-- Ne devine pas les nombres ou les mots illisibles.
-- Les anciennes photos ne sont pas retransmises.
-- Utilise les explications précédentes comme contexte textuel.
-- Si revoir une ancienne photo est nécessaire, demande de la joindre à nouveau.
-"""
-
-WORK_MODES = {
+MODES = {
     "course": "📖 Comprendre mon cours",
     "exercise": "🧩 M’aider sur un exercice",
     "quiz": "🎯 Me tester",
@@ -84,1287 +52,121 @@ WORK_MODES = {
 
 MODE_DESCRIPTIONS = {
     "course": (
-        "Une explication claire, des exemples et les points "
-        "essentiels à retenir."
+        "Comprends une notion avec une explication claire, "
+        "un exemple et les points essentiels."
     ),
     "exercise": (
-        "Des indices progressifs pour avancer dans ton exercice "
-        "sans recevoir immédiatement toute la solution."
+        "Avance avec des indices progressifs. "
+        "Demande la correction complète quand tu en as besoin."
     ),
     "quiz": (
-        "Une question à la fois, une correction expliquée "
-        "et un bilan à la fin."
+        "Réponds à une question à la fois, "
+        "puis découvre une correction expliquée."
     ),
 }
 
-MODE_PLACEHOLDERS = {
-    "course": "Exemple : explique-moi les fonctions affines, niveau seconde.",
-    "exercise": "Écris ton exercice ou ajoute une photo avec +.",
-    "quiz": "Exemple : un quiz de 5 questions sur les vecteurs, niveau seconde.",
+PLACEHOLDERS = {
+    "course": "Explique-moi les fonctions affines, niveau seconde…",
+    "exercise": "Écris l’exercice ou ajoute une photo avec +…",
+    "quiz": "Un quiz de 5 questions sur les vecteurs, niveau seconde…",
 }
 
+PHOTO_REQUESTS = {
+    "course": (
+        "Explique les notions lisibles sur ces photos "
+        "avec un exemple et un résumé."
+    ),
+    "exercise": (
+        "Aide-moi à comprendre cet exercice. "
+        "Commence par un indice sans donner toute la correction."
+    ),
+    "quiz": (
+        "Crée un quiz de 5 questions à partir du contenu lisible "
+        "sur ces photos. Pose seulement la première question."
+    ),
+}
+
+SYSTEM_PROMPT = r"""
+Tu es EduBot, un assistant pédagogique francophone.
+
+- Aide l'élève à comprendre et à progresser.
+- Adapte les explications au niveau indiqué.
+- Explique les étapes importantes.
+- Demande une précision si nécessaire.
+- Signale tes incertitudes et n'invente pas de faits.
+- Utilise du Markdown simple.
+- Pour les formules en ligne, utilise $...$.
+- Pour les équations séparées, utilise $$...$$.
+- Ne produis pas de Mermaid, HTML ou SVG.
+- Ne prétends pas générer des images.
+
+Photos :
+- Tu peux analyser les photos jointes au message courant.
+- Ne devine pas les mots ou nombres illisibles.
+- Demande une photo plus nette si nécessaire.
+- Les anciennes photos ne sont pas retransmises.
+- Si tu dois revoir une ancienne photo, demande de la joindre à nouveau.
+"""
+
 MODE_PROMPTS = {
-    "course": r"""
-MODE ACTIF : COMPRENDRE MON COURS
+    "course": """
+MODE : COMPRENDRE MON COURS
 
-Pour une demande de cours :
-1. Commence par l'idée essentielle.
-2. Explique les notions progressivement.
+Pour une nouvelle explication :
+1. Présente simplement l'idée essentielle.
+2. Explique progressivement les notions importantes.
 3. Donne un exemple concret ou résolu.
-4. Signale une erreur fréquente si c'est pertinent.
-5. Termine par un court résumé.
-6. Tu peux poser une question de compréhension.
+4. Signale une erreur fréquente si utile.
+5. Termine par un résumé court.
 
-Adapte la longueur à la demande.
-Ne répète pas systématiquement toutes les rubriques pour une question de suivi.
-Si le niveau manque, demande-le seulement si c'est nécessaire.
+Tu peux poser une question de compréhension.
+Ne répète pas toutes les rubriques pour une simple question de suivi.
 """,
+    "exercise": """
+MODE : M'AIDER SUR UN EXERCICE
 
-    "exercise": r"""
-MODE ACTIF : M'AIDER SUR UN EXERCICE
-
-Objectif : accompagner l'élève dans son raisonnement.
-
-Au début :
-- Identifie ce que l'exercice demande.
-- Si l'énoncé est incomplet ou illisible, demande une précision.
-- Prends en compte ce que l'élève a déjà essayé.
-- Donne un premier indice ou une première étape.
+- Vérifie que l'énoncé est complet et lisible.
+- Prends en compte la tentative de l'élève.
+- Commence par un indice ou une première étape.
 - Invite l'élève à essayer la suite.
-
-Pendant l'échange :
-- Vérifie son raisonnement.
-- Explique précisément les erreurs.
-- Donne des indices progressifs.
-- Ne révèle pas immédiatement toute la solution.
-- Si l'élève demande explicitement la correction complète, donne-la.
-- Si l'élève demande uniquement un indice, ne donne pas la réponse finale.
+- Corrige les erreurs précisément et sans le décourager.
+- Ne donne pas immédiatement toute la solution.
+- Si l'élève demande explicitement la correction complète,
+  donne-la avec les étapes.
 """,
+    "quiz": """
+MODE : ME TESTER
 
-    "quiz": r"""
-MODE ACTIF : ME TESTER
-
-Organise un quiz pédagogique dans la conversation.
-
-Démarrage :
-- Utilise le sujet et le niveau indiqués.
-- Si aucun sujet n'est indiqué, demande le sujet et le niveau.
-- Par défaut, prépare 5 questions.
-- Accepte un autre nombre dans une limite de 10 questions par série.
-- Annonce brièvement le thème et le nombre de questions.
-
-Déroulement :
-- Pose UNE SEULE question à la fois.
-- Numérote les questions, par exemple Question 1/5.
+- Si le thème est absent, demande-le.
+- Utilise le niveau indiqué.
+- Propose 5 questions par défaut, 10 maximum par série.
+- Pose UNE question à la fois.
+- Numérote les questions : Question 1/5, etc.
 - Par défaut, propose un QCM avec les choix A, B, C et D.
-- Ne révèle pas la réponse avant que l'élève ait répondu.
-- Attends la réponse avant de continuer.
-- Si la réponse est ambiguë, demande une précision sans la noter.
-- Après la réponse, indique si elle est correcte.
-- Explique brièvement pourquoi.
+- Ne révèle pas la bonne réponse avant la réponse de l'élève.
+- Attends sa réponse.
+- Si elle est ambiguë, demande une précision sans la noter.
+- Après sa réponse, indique si elle est correcte et explique pourquoi.
 - Pose ensuite la question suivante.
-- Utilise uniquement les réponses réellement données pour le score.
+- Compte seulement les réponses réellement données.
 - Si l'élève veut passer, explique la réponse et compte la question
   comme non réussie.
-- Ne prétends pas connaître un score absent du contexte.
-
-Fin :
-- Donne le score sur les questions terminées.
-- Résume les notions acquises et celles à retravailler.
-- Ne lance pas automatiquement une nouvelle série.
-
-Si l'élève demande de recommencer :
-- Lance une nouvelle série et remets le score à zéro.
+- À la fin, donne le score et les notions à retravailler.
+- Ne recommence pas automatiquement.
+- Si le contexte ne permet pas un score fiable, dis-le.
 """,
 }
 
 
 # ============================================================
-# 3. STYLE DE L'INTERFACE
+# 2. INTERFACE ET COULEURS
 # ============================================================
 
 st.markdown(
     """
     <style>
     .stApp {
-        background:
-            radial-gradient(
-                ellipse at top right,
-                #292345 0%,
-                #0e1220 65%
-            );
+        background: radial-gradient(
+            ellipse at top right, #292345 0%, #0e1220 65%
+        );
         color: #f1f5f9;
-        color-scheme: dark;
-    }
-
-    [data-testid="stHeader"] {
-        background: transparent;
-    }
-
-    .block-container {
-        max-width: 1120px;
-        padding-top: 2rem;
-        padding-bottom: 3rem;
-    }
-
-    [data-testid="stSidebar"] {
-        background: #111626;
-        border-right: 1px solid #35405a;
-    }
-
-    /* Texte et titres */
-
-    [data-testid="stMarkdownContainer"],
-    [data-testid="stMarkdownContainer"] p,
-    [data-testid="stMarkdownContainer"] li,
-    [data-testid="stMarkdownContainer"] strong,
-    [data-testid="stMarkdownContainer"] em,
-    [data-testid="stMarkdownContainer"] h1,
-    [data-testid="stMarkdownContainer"] h2,
-    [data-testid="stMarkdownContainer"] h3,
-    [data-testid="stMarkdownContainer"] h4,
-    [data-testid="stHeading"] h1,
-    [data-testid="stHeading"] h2,
-    [data-testid="stHeading"] h3,
-    [data-testid="stWidgetLabel"],
-    [data-testid="stWidgetLabel"] p {
-        color: #f1f5f9 !important;
-    }
-
-    [data-testid="stCaptionContainer"],
-    [data-testid="stCaptionContainer"] p {
-        color: #bac7dd !important;
-    }
-
-    [data-testid="stMarkdownContainer"] a {
-        color: #d3bfff !important;
-    }
-
-    .katex {
-        color: #f1f5f9 !important;
-    }
-
-    /* Messages */
-
-    [data-testid="stChatMessage"] {
-        background: #192136 !important;
-        border: 1px solid #3c4863;
-        border-radius: 18px;
-        padding: 20px;
-        margin-bottom: 16px;
-    }
-
-    [data-testid="stChatMessageContent"] {
-        color: #f1f5f9 !important;
-    }
-
-    /* Tableaux */
-
-    [data-testid="stMarkdownContainer"] table {
-        width: 100%;
-        border-collapse: collapse;
-    }
-
-    [data-testid="stMarkdownContainer"] th {
-        background: #303958 !important;
-        color: #ffffff !important;
-        border: 1px solid #53617e !important;
-        padding: 12px;
-    }
-
-    [data-testid="stMarkdownContainer"] td {
-        background: #1b253b !important;
-        color: #edf2fa !important;
-        border: 1px solid #53617e !important;
-        padding: 12px;
-    }
-
-    /* Champs de saisie */
-
-    [data-testid="stTextInput"] [data-baseweb="input"],
-    [data-testid="stTextInput"] [data-baseweb="base-input"] {
-        background: #222d46 !important;
-        border-color: #667596 !important;
-    }
-
-    [data-testid="stTextInput"] input,
-    [data-testid="stTextArea"] textarea {
-        background: #222d46 !important;
-        color: #f8fafc !important;
-        -webkit-text-fill-color: #f8fafc !important;
-        caret-color: #d3bfff;
-    }
-
-    [data-testid="stTextInput"] input::placeholder,
-    [data-testid="stTextArea"] textarea::placeholder {
-        color: #bdc9df !important;
-        -webkit-text-fill-color: #bdc9df !important;
-        opacity: 1;
-    }
-
-    [data-testid="stForm"],
-    [data-testid="stExpander"] {
-        background: #182136;
-        border: 1px solid #3c4863;
-        border-radius: 14px;
-    }
-
-    /* Saisie du chat */
-
-    [data-testid="stBottom"],
-    [data-testid="stBottom"] > div {
-        background: #0e1220 !important;
-    }
-
-    [data-testid="stChatInput"] {
-        background: #222d46 !important;
-        border: 1px solid #7c89ae !important;
-        border-radius: 18px;
-        color: #f8fafc !important;
-    }
-
-    [data-testid="stChatInput"] textarea {
-        background: transparent !important;
-        color: #f8fafc !important;
-        -webkit-text-fill-color: #f8fafc !important;
-        caret-color: #d3bfff;
-    }
-
-    [data-testid="stChatInput"] textarea::placeholder {
-        color: #c3cee2 !important;
-        -webkit-text-fill-color: #c3cee2 !important;
-        opacity: 1;
-    }
-
-    [data-testid="stChatInput"] button {
-        color: #ede9fe !important;
-    }
-
-    /* Boutons */
-
-    .stButton > button,
-    .stFormSubmitButton > button {
-        background: #293550;
-        color: #f8fafc !important;
-        border: 1px solid #617092;
-        border-radius: 12px;
-    }
-
-    .stButton > button:hover,
-    .stFormSubmitButton > button:hover {
-        background: #394969;
-        border-color: #d3bfff;
-    }
-
-    .stButton > button[kind="primary"],
-    .stFormSubmitButton > button[kind="primary"] {
-        background: linear-gradient(120deg, #6941c6, #8736a8);
-        border: 1px solid #b69af1;
-        color: #ffffff !important;
-    }
-
-    button:disabled {
-        opacity: 0.5;
-    }
-
-    [data-testid="stRadio"] label,
-    [data-testid="stRadio"] label p {
-        color: #f1f5f9 !important;
-    }
-
-    /* Bandeau */
-
-    .hero {
-        padding: 30px;
-        border-radius: 24px;
-        border: 1px solid #655484;
-        background: linear-gradient(120deg, #30264f, #1c3048);
-        margin-bottom: 24px;
-    }
-
-    .hero h1 {
-        color: #ffffff !important;
-        margin: 0 0 8px 0;
-        font-size: clamp(28px, 5vw, 42px);
-    }
-
-    .hero p {
-        color: #d8e1f1 !important;
-        margin: 0;
-        line-height: 1.6;
-    }
-
-    .badge {
-        color: #e0caff;
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 2px;
-        margin-bottom: 12px;
-    }
-
-    @media (max-width: 640px) {
-        .hero {
-            padding: 22px;
-        }
-
-        [data-testid="stChatMessage"] {
-            padding: 14px;
-        }
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    """
-    <div class="hero">
-        <div class="badge">APPRENDRE • COMPRENDRE • PROGRESSER</div>
-        <h1>🎓 EduBot Studio</h1>
-        <p>
-            Comprends tes cours, avance dans tes exercices
-            et teste tes connaissances.
-        </p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# 4. CONNEXION GOOGLE ET SECRETS
-# ============================================================
-
-def read_secrets():
-    try:
-        return st.secrets.to_dict()
-    except FileNotFoundError:
-        return {}
-
-
-secrets = read_secrets()
-auth_config = secrets.get("auth", {})
-
-required_auth_fields = (
-    "redirect_uri",
-    "cookie_secret",
-    "client_id",
-    "client_secret",
-    "server_metadata_url",
-)
-
-if not all(auth_config.get(field) for field in required_auth_fields):
-    st.warning(
-        "La connexion Google n'est pas complètement configurée. "
-        "Complète la section [auth] dans les Secrets Streamlit."
-    )
-    st.stop()
-
-if not st.user.get("is_logged_in", False):
-    st.session_state.pop("user", None)
-    st.session_state.pop("chat_id", None)
-
-    _, center, _ = st.columns([1, 2, 1])
-
-    with center:
-        with st.container(border=True):
-            st.subheader("Bienvenue dans ton espace ✨")
-            st.write(
-                "Connecte-toi pour retrouver tes discussions "
-                "et tes trois modes de travail."
-            )
-
-            st.button(
-                "Continuer avec Google",
-                on_click=st.login,
-                type="primary",
-                use_container_width=True,
-            )
-
-            st.caption(
-                "La connexion s'effectue chez Google. "
-                "EduBot ne reçoit pas ton mot de passe."
-            )
-
-    st.stop()
-
-google_sub = st.user.get("sub")
-
-if not google_sub:
-    st.error("L'identifiant Google n'a pas été transmis.")
-    st.button("Se déconnecter", on_click=st.logout)
-    st.stop()
-
-google_identity = "google:" + str(google_sub)
-
-display_name = (
-    st.user.get("name")
-    or st.user.get("email")
-    or "Élève"
-)
-
-email = st.user.get("email", "")
-
-api_key = (
-    os.environ.get("GROQ_API_KEY", "")
-    or secrets.get("GROQ_API_KEY", "")
-).strip()
-
-
-# ============================================================
-# 5. BASE DE DONNÉES
-# ============================================================
-
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def connect_db():
-    connection = sqlite3.connect(DB_PATH, timeout=30)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    return connection
-
-
-def now():
-    return datetime.now(PARIS).isoformat()
-
-
-def today():
-    return datetime.now(PARIS).date().isoformat()
-
-
-with connect_db() as connection:
-    connection.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            salt BLOB NOT NULL,
-            password_hash BLOB NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS chats (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL REFERENCES users(id),
-            title TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id TEXT NOT NULL
-                REFERENCES chats(id) ON DELETE CASCADE,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            image BLOB
-        );
-
-        CREATE TABLE IF NOT EXISTS usage (
-            user_id TEXT NOT NULL REFERENCES users(id),
-            day TEXT NOT NULL,
-            count INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (user_id, day)
-        );
-
-        CREATE TABLE IF NOT EXISTS chat_modes (
-            chat_id TEXT PRIMARY KEY
-                REFERENCES chats(id) ON DELETE CASCADE,
-            mode TEXT NOT NULL
-        );
-    """)
-
-    # Compatibilité avec les anciennes tables.
-    # Ces valeurs aléatoires ne servent pas à la connexion Google.
-    connection.execute(
-        """
-        INSERT OR IGNORE INTO users(
-            id, username, salt, password_hash
-        )
-        VALUES (?, ?, ?, ?)
-        """,
-        (
-            uuid.uuid4().hex,
-            google_identity,
-            os.urandom(16),
-            os.urandom(32),
-        ),
-    )
-
-    local_user = connection.execute(
-        "SELECT id FROM users WHERE username = ?",
-        (google_identity,),
-    ).fetchone()
-
-user_id = local_user["id"]
-
-previous_user = st.session_state.get("user", {})
-
-if previous_user.get("id") != user_id:
-    st.session_state.pop("chat_id", None)
-
-st.session_state.user = {
-    "id": user_id,
-    "username": display_name,
-    "email": email,
-}
-
-
-# ============================================================
-# 6. HISTORIQUE, MODES ET QUOTAS
-# ============================================================
-
-def get_chats():
-    with connect_db() as connection:
-        return connection.execute(
-            """
-            SELECT c.*, cm.mode
-            FROM chats c
-            LEFT JOIN chat_modes cm ON cm.chat_id = c.id
-            WHERE c.user_id = ?
-            ORDER BY c.updated_at DESC
-            """,
-            (user_id,),
-        ).fetchall()
-
-
-def get_messages(chat_id):
-    if not chat_id:
-        return []
-
-    with connect_db() as connection:
-        return connection.execute(
-            """
-            SELECT m.*
-            FROM messages m
-            JOIN chats c ON c.id = m.chat_id
-            WHERE c.id = ? AND c.user_id = ?
-            ORDER BY m.id
-            """,
-            (chat_id, user_id),
-        ).fetchall()
-
-
-def image_count():
-    with connect_db() as connection:
-        row = connection.execute(
-            """
-            SELECT count FROM usage
-            WHERE user_id = ? AND day = ?
-            """,
-            (user_id, today()),
-        ).fetchone()
-
-    return row["count"] if row else 0
-
-
-def make_title(text):
-    title = re.sub(r"\s+", " ", text).strip()
-    return title[:57] + "…" if len(title) > 60 else title
-
-
-def save_mode(chat_id, mode):
-    if mode not in WORK_MODES:
-        raise ValueError("Mode invalide.")
-
-    with connect_db() as connection:
-        owned = connection.execute(
-            "SELECT id FROM chats WHERE id = ? AND user_id = ?",
-            (chat_id, user_id),
-        ).fetchone()
-
-        if not owned:
-            raise ValueError("Discussion introuvable.")
-
-        connection.execute(
-            """
-            INSERT INTO chat_modes(chat_id, mode)
-            VALUES (?, ?)
-            ON CONFLICT(chat_id)
-            DO UPDATE SET mode = excluded.mode
-            """,
-            (chat_id, mode),
-        )
-
-
-def save_submission(chat_id, text, images, mode):
-    if mode not in WORK_MODES:
-        raise ValueError("Mode invalide.")
-
-    connection = connect_db()
-
-    try:
-        connection.execute("BEGIN IMMEDIATE")
-
-        if chat_id:
-            owned = connection.execute(
-                "SELECT id FROM chats WHERE id = ? AND user_id = ?",
-                (chat_id, user_id),
-            ).fetchone()
-
-            if not owned:
-                raise ValueError("Cette discussion est introuvable.")
-
-        day = today()
-
-        row = connection.execute(
-            "SELECT count FROM usage WHERE user_id = ? AND day = ?",
-            (user_id, day),
-        ).fetchone()
-
-        used = row["count"] if row else 0
-        remaining = max(0, DAILY_LIMIT - used)
-
-        if len(images) > remaining:
-            raise ValueError(
-                f"Il te reste {remaining} image(s) aujourd'hui."
-            )
-
-        if not chat_id:
-            chat_id = uuid.uuid4().hex
-
-            connection.execute(
-                "INSERT INTO chats VALUES (?, ?, ?, ?)",
-                (chat_id, user_id, make_title(text), now()),
-            )
-
-        connection.execute(
-            """
-            INSERT INTO chat_modes(chat_id, mode)
-            VALUES (?, ?)
-            ON CONFLICT(chat_id)
-            DO UPDATE SET mode = excluded.mode
-            """,
-            (chat_id, mode),
-        )
-
-        if images:
-            connection.execute(
-                """
-                INSERT INTO usage(user_id, day, count)
-                VALUES (?, ?, ?)
-                ON CONFLICT(user_id, day)
-                DO UPDATE SET count = count + excluded.count
-                """,
-                (user_id, day, len(images)),
-            )
-
-        connection.execute(
-            """
-            INSERT INTO messages(chat_id, role, content)
-            VALUES (?, 'user', ?)
-            """,
-            (chat_id, text),
-        )
-
-        for image in images:
-            connection.execute(
-                """
-                INSERT INTO messages(chat_id, role, content, image)
-                VALUES (?, 'attachment', '', ?)
-                """,
-                (chat_id, image),
-            )
-
-        connection.execute(
-            "UPDATE chats SET updated_at = ? WHERE id = ?",
-            (now(), chat_id),
-        )
-
-        connection.commit()
-        return chat_id
-
-    except Exception:
-        connection.rollback()
-        raise
-
-    finally:
-        connection.close()
-
-
-def save_reply(chat_id, reply):
-    with connect_db() as connection:
-        owned = connection.execute(
-            "SELECT id FROM chats WHERE id = ? AND user_id = ?",
-            (chat_id, user_id),
-        ).fetchone()
-
-        if not owned:
-            raise ValueError("Discussion introuvable.")
-
-        connection.execute(
-            """
-            INSERT INTO messages(chat_id, role, content)
-            VALUES (?, 'assistant', ?)
-            """,
-            (chat_id, reply),
-        )
-
-        connection.execute(
-            "UPDATE chats SET updated_at = ? WHERE id = ?",
-            (now(), chat_id),
-        )
-
-
-# ============================================================
-# 7. TEXTE ET VALIDATION DES IMAGES
-# ============================================================
-
-def clean_text(text):
-    text = re.sub(
-        r"^[ \t]*```[ \t]*mermaid[^\n]*\n"
-        r".*?(?:^[ \t]*```[ \t]*(?:\n|$)|\Z)",
-        "\n\n[Schéma masqué : demande une explication textuelle.]\n\n",
-        text or "",
-        flags=re.MULTILINE | re.DOTALL | re.IGNORECASE,
-    )
-
-    parts = re.split(
-        r"(```.*?```|`[^`\n]*`)",
-        text,
-        flags=re.DOTALL,
-    )
-
-    for index, part in enumerate(parts):
-        if part.startswith("`"):
-            continue
-
-        part = re.sub(
-            r"\\\[(.*?)\\\]",
-            lambda match: (
-                "\n\n$$\n"
-                + match.group(1).strip()
-                + "\n$$\n\n"
-            ),
-            part,
-            flags=re.DOTALL,
-        )
-
-        part = re.sub(
-            r"\\\((.*?)\\\)",
-            lambda match: "$" + match.group(1).strip() + "$",
-            part,
-            flags=re.DOTALL,
-        )
-
-        parts[index] = part
-
-    return "".join(parts).strip()
-
-
-def prepare_image(upload):
-    raw = upload.getvalue()
-
-    if len(raw) > MAX_IMAGE_BYTES:
-        raise ValueError("Chaque image doit faire au maximum 5 Mo.")
-
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter(
-                "error",
-                Image.DecompressionBombWarning,
-            )
-
-            with Image.open(io.BytesIO(raw)) as check:
-                if check.format not in {"JPEG", "PNG", "WEBP"}:
-                    raise ValueError(
-                        "Formats autorisés : JPG, PNG et WebP."
-                    )
-
-                check.verify()
-
-            with Image.open(io.BytesIO(raw)) as source:
-                image = ImageOps.exif_transpose(source).convert("RGB")
-                image.thumbnail((1600, 1600))
-
-                output = io.BytesIO()
-                image.save(output, format="JPEG", quality=85)
-
-                return output.getvalue()
-
-    except (
-        UnidentifiedImageError,
-        OSError,
-        Image.DecompressionBombError,
-        Image.DecompressionBombWarning,
-    ) as error:
-        raise ValueError(
-            "Image invalide, endommagée ou trop grande."
-        ) from error
-
-
-def error_message(error):
-    if isinstance(error, groq.AuthenticationError):
-        return "La clé API Groq est invalide."
-
-    if isinstance(error, groq.RateLimitError):
-        return (
-            "La limite Groq est atteinte. "
-            "Vérifie les quotas et réessaie plus tard."
-        )
-
-    if isinstance(
-        error,
-        (groq.NotFoundError, groq.PermissionDeniedError),
-    ):
-        return (
-            "Le modèle est inaccessible. Vérifie son identifiant "
-            "et les autorisations du compte Groq."
-        )
-
-    if isinstance(error, groq.APITimeoutError):
-        return "Le délai de réponse est dépassé."
-
-    if isinstance(error, groq.APIConnectionError):
-        return "La connexion à Groq a échoué."
-
-    if isinstance(error, groq.BadRequestError):
-        return (
-            "La demande a été refusée. Essaie une question "
-            "plus courte ou une nouvelle discussion."
-        )
-
-    return (
-        "Une erreur est survenue. Consulte les journaux "
-        "du serveur pour le diagnostic."
-    )
-
-
-# ============================================================
-# 8. BARRE LATÉRALE
-# ============================================================
-
-chats = get_chats()
-
-with st.sidebar:
-    st.title("🎓 Mon espace")
-    st.write(f"Bonjour, {display_name} 👋")
-
-    if email:
-        st.caption(email)
-
-    if st.button(
-        "＋ Nouvelle discussion",
-        type="primary",
-        use_container_width=True,
-    ):
-        st.session_state.pop("chat_id", None)
-        st.session_state.pop("work_mode_new", None)
-        st.rerun()
-
-    st.divider()
-    st.subheader("📷 Mes photos")
-
-    remaining = max(0, DAILY_LIMIT - image_count())
-
-    st.progress(remaining / DAILY_LIMIT)
-    st.caption(f"{remaining} / {DAILY_LIMIT} images restantes")
-    st.caption("Remise à zéro à minuit, heure de Paris.")
-
-    st.divider()
-    st.subheader("💬 Mes discussions")
-
-    search = st.text_input(
-        "Rechercher un thème",
-        placeholder="Maths, français, histoire…",
-    )
-
-    visible_chats = [
-        chat
-        for chat in chats
-        if search.casefold() in chat["title"].casefold()
-    ]
-
-    mode_icons = {
-        "course": "📖",
-        "exercise": "🧩",
-        "quiz": "🎯",
-    }
-
-    for chat in visible_chats:
-        selected = st.session_state.get("chat_id") == chat["id"]
-        icon = mode_icons.get(chat["mode"], "📖")
-        label = ("📌 " if selected else icon + " ") + chat["title"]
-
-        if st.button(
-            label,
-            key=f"open_{chat['id']}",
-            use_container_width=True,
-        ):
-            st.session_state.chat_id = chat["id"]
-            st.rerun()
-
-    if not visible_chats:
-        st.caption(
-            "Aucun résultat."
-            if search
-            else "Tes discussions apparaîtront ici."
-        )
-
-    st.divider()
-
-    if st.button(
-        "🚪 Me déconnecter",
-        use_container_width=True,
-    ):
-        st.session_state.clear()
-        st.logout()
-
-
-# ============================================================
-# 9. DISCUSSION ET CHOIX DU MODE
-# ============================================================
-
-chat_id = st.session_state.get("chat_id")
-
-active_chat = next(
-    (chat for chat in chats if chat["id"] == chat_id),
-    None,
-)
-
-if not active_chat:
-    chat_id = None
-    st.session_state.pop("chat_id", None)
-
-history = get_messages(chat_id)
-
-notice = st.session_state.pop("notice", None)
-
-if notice:
-    st.error(notice)
-
-saved_mode = active_chat["mode"] if active_chat else "course"
-
-if saved_mode not in WORK_MODES:
-    saved_mode = "course"
-
-mode_keys = list(WORK_MODES)
-
-st.subheader("Comment veux-tu travailler ?")
-
-selected_mode = st.radio(
-    "Choisis ton mode",
-    options=mode_keys,
-    index=mode_keys.index(saved_mode),
-    format_func=lambda mode: WORK_MODES[mode],
-    horizontal=True,
-    key=f"work_mode_{chat_id or 'new'}",
-)
-
-st.info(MODE_DESCRIPTIONS[selected_mode])
-
-if chat_id and selected_mode != saved_mode:
-    save_mode(chat_id, selected_mode)
-
-    st.caption(
-        "Le nouveau mode s'applique aux prochaines réponses. "
-        "Les anciens messages restent dans la discussion."
-    )
-
-if active_chat:
-    st.subheader(active_chat["title"])
-
-    with st.expander("✏️ Modifier le thème de cette discussion"):
-        with st.form(f"rename_{chat_id}"):
-            new_title = st.text_input(
-                "Titre / thème",
-                value=active_chat["title"],
-                max_chars=80,
-            )
-
-            rename = st.form_submit_button("Enregistrer")
-
-        if rename:
-            if not new_title.strip():
-                st.warning("Le titre ne peut pas être vide.")
-
-            else:
-                with connect_db() as connection:
-                    connection.execute(
-                        """
-                        UPDATE chats SET title = ?
-                        WHERE id = ? AND user_id = ?
-                        """,
-                        (new_title.strip(), chat_id, user_id),
-                    )
-
-                st.rerun()
-
-else:
-    if selected_mode == "course":
-        st.markdown("### 📖 On rend ton cours plus clair")
-        st.write(
-            "Indique la notion et ton niveau. "
-            "EduBot te donnera une explication, un exemple "
-            "et les points essentiels à retenir."
-        )
-        st.caption(
-            "Exemple : explique-moi la photosynthèse, niveau seconde."
-        )
-
-    elif selected_mode == "exercise":
-        st.markdown("### 🧩 On avance étape par étape")
-        st.write(
-            "Écris l'énoncé ou joins une photo. "
-            "Si tu as déjà commencé, montre aussi ta tentative."
-        )
-        st.caption(
-            "Exemple : aide-moi à résoudre 3x + 5 = 20, "
-            "en commençant par un indice."
-        )
-
-    else:
-        st.markdown("### 🎯 À toi de jouer")
-        st.write(
-            "Choisis un sujet et ton niveau. "
-            "EduBot posera une question à la fois."
-        )
-        st.caption(
-            "Exemple : un quiz de 5 questions sur les vecteurs, "
-            "niveau seconde."
-        )
-
-with st.expander("💡 Conseils pour utiliser ce mode"):
-    if selected_mode == "course":
-        st.markdown(
-            """
-            - Précise la notion et ton niveau.
-            - Demande un exemple si nécessaire.
-            - Écris « Explique plus simplement » si tu bloques.
-            - Demande ensuite une question de compréhension.
-            """
-        )
-
-    elif selected_mode == "exercise":
-        st.markdown(
-            """
-            - Envoie l'énoncé complet.
-            - Montre ce que tu as déjà essayé.
-            - Demande un petit indice pour garder la main.
-            - Demande la correction complète si tu en as besoin.
-            """
-        )
-
-    else:
-        st.markdown(
-            """
-            - Indique le sujet, le niveau et le nombre de questions.
-            - Réponds avec A, B, C ou D pour un QCM.
-            - Demande une explication après une correction si nécessaire.
-            - Pour repartir de zéro, ouvre une nouvelle discussion.
-            """
-        )
-
-        st.caption(
-            "Le quiz et son score sont gérés dans la conversation "
-            "par l'IA : ce n'est pas une notation officielle."
-        )
-
-st.caption(
-    "📎 JPG, PNG ou WebP • 5 Mo par image. "
-    "Les photos sont conservées dans l'historique et "
-    "transmises à Groq pour analyse."
-)
-
-for message in history:
-    if message["role"] == "attachment":
-        st.image(message["image"], width=320)
-        continue
-
-    avatar = "🎓" if message["role"] == "assistant" else "👤"
-
-    with st.chat_message(message["role"], avatar=avatar):
-        if message["role"] == "assistant":
-            st.markdown(clean_text(message["content"]))
-        else:
-            st.markdown(message["content"])
-
-if not api_key:
-    st.warning(
-        "Ajoute GROQ_API_KEY dans les Secrets "
-        "pour activer les réponses."
-    )
-
-
-# ============================================================
-# 10. ENVOI DU MESSAGE ET RÉPONSE
-# ============================================================
-
-submission = st.chat_input(
-    MODE_PLACEHOLDERS[selected_mode],
-    accept_file="multiple",
-    file_type=["jpg", "jpeg", "png", "webp"],
-    max_upload_size=5,
-    disabled=not bool(api_key),
-    key=f"input_{chat_id or 'new'}",
-)
-
-if submission:
-    text = (submission.text or "").strip()
-    files = list(submission.files or [])
-
-    if not text and not files:
-        st.stop()
-
-    if len(files) > DAILY_LIMIT:
-        st.error("Tu peux envoyer au maximum 3 images.")
-        st.stop()
-
-    remaining = max(0, DAILY_LIMIT - image_count())
-
-    if len(files) > remaining:
-        st.error(
-            f"Il te reste {remaining} image(s) aujourd'hui. "
-            "Tu peux continuer sans photo."
-        )
-        st.stop()
-
-    try:
-        images = [prepare_image(file) for file in files]
-
-    except ValueError as error:
-        st.error(str(error))
-        st.stop()
-
-    if not text:
-        default_requests = {
-            "course": (
-                "Explique les notions présentes sur ces photos "
-                "avec un exemple et un résumé."
-            ),
-            "exercise": (
-                "Aide-moi à comprendre cet exercice. "
-                "Commence par un indice ou une première étape, "
-                "sans donner immédiatement toute la correction."
-            ),
-            "quiz": (
-                "Prépare un quiz de 5 questions à partir du contenu "
-                "lisible sur ces photos. Pose uniquement "
-                "la première question pour commencer."
-            ),
-        }
-
-        text = default_requests[selected_mode]
-
-    try:
-        chat_id = save_submission(
-            chat_id,
-            text,
-            images,
-            selected_mode,
-        )
-
-    except ValueError as error:
-        st.error(str(error))
-        st.stop()
-
-    st.session_state.chat_id = chat_id
-
-    with st.chat_message("user", avatar="👤"):
-        st.markdown(text)
-
-        for image in images:
-            st.image(image, width=320)
-
-    context_limit = 50 if selected_mode == "quiz" else 20
-
-    previous_messages = [
-        {
-            "role": message["role"],
-            "content": (
-                clean_text(message["content"])
-                if message["role"] == "assistant"
-                else message["content"]
-            ),
-        }
-        for message in history
-        if message["role"] in {"user", "assistant"}
-    ][-context_limit:]
-
-    if images:
-        content = [{"type": "text", "text": text}]
-
-        for image in images:
-            encoded = base64.b64encode(image).decode("ascii")
-
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{encoded}"
-                    },
-                }
-            )
-
-        model = VISION_MODEL
-
-    else:
-        content = text
-        model = TEXT_MODEL
-
-    combined_prompt = (
-        SYSTEM_PROMPT
-        + "\n\n"
-        + MODE_PROMPTS[selected_mode]
-    )
-
-    messages_api = [
-        {"role": "system", "content": combined_prompt},
-        *previous_messages,
-        {"role": "user", "content": content},
-    ]
-
-    spinner_messages = {
-        "course": "EduBot prépare ton explication…",
-        "exercise": "EduBot étudie ton exercice…",
-        "quiz": "EduBot prépare la suite du quiz…",
-    }
-
-    try:
-        with st.spinner(spinner_messages[selected_mode]):
-            client = Groq(
-                api_key=api_key,
-                timeout=90.0,
-                max_retries=0,
-            )
-
-            result = client.chat.completions.create(
-                model=model,
-                messages=messages_api,
-                temperature=0.3,
-                max_completion_tokens=2500,
-            )
-
-            reply = clean_text(
-                result.choices[0].message.content
-            )
-
-            if not reply:
-                raise ValueError("Réponse vide.")
-
-            save_reply(chat_id, reply)
-
-    except Exception as error:
-        LOGGER.error(
-            "Erreur EduBot : mode=%s type=%s statut=%s",
-            selected_mode,
-            type(error).__name__,
-            getattr(error, "status_code", None),
-        )
-
-        st.session_state.notice = (
-            error_message(error)
-            + " Ton message reste enregistré. "
-            "Les photos soumises restent comptées dans le quota."
-        )
-
-    st.rerun()
-
-
-# ============================================================
-# 11. PIED DE PAGE
-# ============================================================
-
-st.divider()
-st.caption(
-    "EduBot Studio • Comprendre plutôt que recopier • "
-    "Les réponses peuvent contenir des erreurs."
-)
