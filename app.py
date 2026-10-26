@@ -3,24 +3,26 @@ import io
 import logging
 import os
 import re
-import sqlite3
 import uuid
 import warnings
 
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import groq
+import psycopg
 import streamlit as st
 from groq import Groq
 from PIL import Image, ImageOps, UnidentifiedImageError
+from dotenv import load_dotenv
 
 
 # ============================================================
 # 1. CONFIGURATION
 # ============================================================
+
+load_dotenv()
 
 st.set_page_config(
     page_title="EduBot Studio",
@@ -32,8 +34,10 @@ st.set_page_config(
 LOGGER = logging.getLogger(__name__)
 PARIS = ZoneInfo("Europe/Paris")
 
-DATA_DIR = Path(os.environ.get("EDUBOT_DATA_DIR", "edubot_data"))
-DB_PATH = DATA_DIR / "edubot.sqlite3"
+DATABASE_URL = (
+    os.environ.get("DATABASE_URL", "")
+    or st.secrets.get("DATABASE_URL", "")
+).strip()
 
 DAILY_IMAGE_LIMIT = 3
 CHAT_MESSAGE_LIMIT = 20
@@ -386,7 +390,6 @@ if not google_sub:
 
 display_name = st.user.get("name") or st.user.get("email") or "Élève"
 email = st.user.get("email", "")
-google_identity = "google:" + google_sub
 
 api_key = (
     os.environ.get("GROQ_API_KEY", "")
@@ -394,110 +397,84 @@ api_key = (
 ).strip()
 
 
-def is_admin():
-    allowed = str(
-        secrets.get("admin", {}).get("google_sub", "")
-    ).strip()
+# ============================================================
+# 4. BASE SUPABASE / POSTGRESQL
+# ============================================================
 
-    return (
-        bool(st.user.get("is_logged_in", False))
-        and bool(allowed)
-        and google_sub == allowed
+if not DATABASE_URL:
+    st.error(
+        "DATABASE_URL est absent. Ajoute-le dans le fichier .env "
+        "ou dans les Secrets Streamlit."
     )
-
-
-# ============================================================
-# 4. BASE SQLITE ACTUELLE
-# ============================================================
-
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+    st.stop()
 
 
 @contextmanager
 def database():
-    connection = sqlite3.connect(DB_PATH, timeout=30)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-
-    try:
-        yield connection
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+    with psycopg.connect(
+        DATABASE_URL,
+        row_factory=psycopg.rows.dict_row,
+        autocommit=False,
+    ) as connection:
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
 
 def now():
-    return datetime.now(PARIS).isoformat()
+    return datetime.now(PARIS)
 
 
 def today():
-    return datetime.now(PARIS).date().isoformat()
+    return datetime.now(PARIS).date()
 
 
-with database() as connection:
-    connection.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            salt BLOB NOT NULL,
-            password_hash BLOB NOT NULL
-        );
+def get_or_create_user():
+    with database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id
+                FROM edubot.users
+                WHERE google_sub = %s
+                """,
+                (google_sub,),
+            )
+            user = cursor.fetchone()
 
-        CREATE TABLE IF NOT EXISTS chats (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL REFERENCES users(id),
-            title TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
+            if user:
+                cursor.execute(
+                    """
+                    UPDATE edubot.users
+                    SET display_name = %s,
+                        email = %s,
+                        last_seen_at = NOW()
+                    WHERE id = %s
+                    RETURNING id
+                    """,
+                    (display_name, email, user["id"]),
+                )
+                return cursor.fetchone()["id"]
 
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id TEXT NOT NULL
-                REFERENCES chats(id) ON DELETE CASCADE,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            image BLOB
-        );
+            user_id = str(uuid.uuid4())
 
-        CREATE TABLE IF NOT EXISTS usage (
-            user_id TEXT NOT NULL REFERENCES users(id),
-            day TEXT NOT NULL,
-            count INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (user_id, day)
-        );
+            cursor.execute(
+                """
+                INSERT INTO edubot.users
+                    (id, google_sub, display_name, email)
+                VALUES
+                    (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (user_id, google_sub, display_name, email),
+            )
+            return cursor.fetchone()["id"]
 
-        CREATE TABLE IF NOT EXISTS chat_modes (
-            chat_id TEXT PRIMARY KEY
-                REFERENCES chats(id) ON DELETE CASCADE,
-            mode TEXT NOT NULL
-        );
-    """)
 
-    # Compatibilité avec la base existante.
-    # Aucun mot de passe Google n'est enregistré.
-    connection.execute(
-        """
-        INSERT OR IGNORE INTO users(
-            id, username, salt, password_hash
-        ) VALUES (?, ?, ?, ?)
-        """,
-        (
-            uuid.uuid4().hex,
-            google_identity,
-            os.urandom(16),
-            os.urandom(32),
-        ),
-    )
-
-    local_user = connection.execute(
-        "SELECT id FROM users WHERE username = ?",
-        (google_identity,),
-    ).fetchone()
-
-user_id = local_user["id"]
+user_id = get_or_create_user()
 
 if st.session_state.get("identity") != user_id:
     st.session_state.clear()
@@ -510,16 +487,17 @@ if st.session_state.get("identity") != user_id:
 
 def get_chats():
     with database() as connection:
-        return connection.execute(
-            """
-            SELECT c.*, COALESCE(cm.mode, 'course') AS mode
-            FROM chats c
-            LEFT JOIN chat_modes cm ON cm.chat_id = c.id
-            WHERE c.user_id = ?
-            ORDER BY c.updated_at DESC
-            """,
-            (user_id,),
-        ).fetchall()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, user_id, title, mode, created_at, updated_at
+                FROM edubot.chats
+                WHERE user_id = %s
+                ORDER BY updated_at DESC
+                """,
+                (user_id,),
+            )
+            return cursor.fetchall()
 
 
 def get_messages(chat_id):
@@ -527,26 +505,37 @@ def get_messages(chat_id):
         return []
 
     with database() as connection:
-        return connection.execute(
-            """
-            SELECT m.*
-            FROM messages m
-            JOIN chats c ON c.id = m.chat_id
-            WHERE c.id = ? AND c.user_id = ?
-            ORDER BY m.id
-            """,
-            (chat_id, user_id),
-        ).fetchall()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT m.id, m.chat_id, m.role, m.content, m.image,
+                       m.created_at
+                FROM edubot.messages m
+                JOIN edubot.chats c ON c.id = m.chat_id
+                WHERE m.chat_id = %s
+                  AND c.user_id = %s
+                ORDER BY m.id
+                """,
+                (chat_id, user_id),
+            )
+            return cursor.fetchall()
 
 
 def image_count():
     with database() as connection:
-        row = connection.execute(
-            "SELECT count FROM usage WHERE user_id = ? AND day = ?",
-            (user_id, today()),
-        ).fetchone()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT image_count
+                FROM edubot.daily_usage
+                WHERE user_id = %s
+                  AND day = %s
+                """,
+                (user_id, today()),
+            )
+            row = cursor.fetchone()
 
-    return row["count"] if row else 0
+    return int(row["image_count"]) if row else 0
 
 
 def save_mode(chat_id, mode):
@@ -554,21 +543,29 @@ def save_mode(chat_id, mode):
         raise ValueError("Mode invalide.")
 
     with database() as connection:
-        owned = connection.execute(
-            "SELECT id FROM chats WHERE id = ? AND user_id = ?",
-            (chat_id, user_id),
-        ).fetchone()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id
+                FROM edubot.chats
+                WHERE id = %s
+                  AND user_id = %s
+                """,
+                (chat_id, user_id),
+            )
 
-        if not owned:
-            raise ValueError("Discussion introuvable.")
+            if not cursor.fetchone():
+                raise ValueError("Discussion introuvable.")
 
-        connection.execute(
-            """
-            INSERT INTO chat_modes(chat_id, mode) VALUES (?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET mode = excluded.mode
-            """,
-            (chat_id, mode),
-        )
+            cursor.execute(
+                """
+                UPDATE edubot.chats
+                SET mode = %s
+                WHERE id = %s
+                  AND user_id = %s
+                """,
+                (mode, chat_id, user_id),
+            )
 
 
 def save_submission(chat_id, text, images, mode):
@@ -576,119 +573,181 @@ def save_submission(chat_id, text, images, mode):
         raise ValueError("Mode invalide.")
 
     with database() as connection:
-        connection.execute("BEGIN IMMEDIATE")
-
-        if chat_id:
-            owned = connection.execute(
-                "SELECT id FROM chats WHERE id = ? AND user_id = ?",
-                (chat_id, user_id),
-            ).fetchone()
-
-            if not owned:
-                raise ValueError("Discussion introuvable.")
-
-            sent = connection.execute(
-                """
-                SELECT COUNT(*) FROM messages
-                WHERE chat_id = ? AND role = 'user'
-                """,
-                (chat_id,),
-            ).fetchone()[0]
-
-            if sent >= CHAT_MESSAGE_LIMIT:
-                raise ValueError(
-                    "Cette discussion a atteint 20 messages. "
-                    "Ouvre une nouvelle discussion gratuitement."
+        with connection.cursor() as cursor:
+            if chat_id:
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM edubot.chats
+                    WHERE id = %s
+                      AND user_id = %s
+                    """,
+                    (chat_id, user_id),
                 )
 
-        day = today()
-        row = connection.execute(
-            "SELECT count FROM usage WHERE user_id = ? AND day = ?",
-            (user_id, day),
-        ).fetchone()
+                if not cursor.fetchone():
+                    raise ValueError("Discussion introuvable.")
 
-        used = row["count"] if row else 0
-        remaining = max(0, DAILY_IMAGE_LIMIT - used)
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM edubot.messages
+                    WHERE chat_id = %s
+                      AND role = 'user'
+                    """,
+                    (chat_id,),
+                )
+                sent = cursor.fetchone()["count"]
 
-        if len(images) > remaining:
-            raise ValueError(
-                f"Il te reste {remaining} image(s) aujourd'hui."
-            )
+                if sent >= CHAT_MESSAGE_LIMIT:
+                    raise ValueError(
+                        "Cette discussion a atteint 20 messages. "
+                        "Ouvre une nouvelle discussion gratuitement."
+                    )
 
-        if not chat_id:
-            chat_id = uuid.uuid4().hex
-            title = re.sub(r"\s+", " ", text).strip()
-            title = title[:57] + "…" if len(title) > 60 else title
+            day = today()
 
-            connection.execute(
-                "INSERT INTO chats VALUES (?, ?, ?, ?)",
-                (chat_id, user_id, title, now()),
-            )
-
-        connection.execute(
-            """
-            INSERT INTO chat_modes(chat_id, mode) VALUES (?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET mode = excluded.mode
-            """,
-            (chat_id, mode),
-        )
-
-        if images:
-            connection.execute(
+            cursor.execute(
                 """
-                INSERT INTO usage(user_id, day, count) VALUES (?, ?, ?)
-                ON CONFLICT(user_id, day)
-                DO UPDATE SET count = count + excluded.count
+                SELECT image_count
+                FROM edubot.daily_usage
+                WHERE user_id = %s
+                  AND day = %s
                 """,
-                (user_id, day, len(images)),
+                (user_id, day),
             )
+            row = cursor.fetchone()
 
-        connection.execute(
-            """
-            INSERT INTO messages(chat_id, role, content)
-            VALUES (?, 'user', ?)
-            """,
-            (chat_id, text),
-        )
+            used = int(row["image_count"]) if row else 0
+            remaining = max(0, DAILY_IMAGE_LIMIT - used)
 
-        for image in images:
-            connection.execute(
+            if len(images) > remaining:
+                raise ValueError(
+                    f"Il te reste {remaining} image(s) aujourd'hui."
+                )
+
+            if not chat_id:
+                chat_id = str(uuid.uuid4())
+                title = re.sub(r"\s+", " ", text).strip()
+                title = title[:57] + "…" if len(title) > 60 else title
+
+                cursor.execute(
+                    """
+                    INSERT INTO edubot.chats
+                        (id, user_id, title, mode)
+                    VALUES
+                        (%s, %s, %s, %s)
+                    """,
+                    (chat_id, user_id, title, mode),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE edubot.chats
+                    SET mode = %s
+                    WHERE id = %s
+                      AND user_id = %s
+                    """,
+                    (mode, chat_id, user_id),
+                )
+
+            if images:
+                cursor.execute(
+                    """
+                    INSERT INTO edubot.daily_usage
+                        (user_id, day, image_count)
+                    VALUES
+                        (%s, %s, %s)
+                    ON CONFLICT (user_id, day)
+                    DO UPDATE SET
+                        image_count =
+                            edubot.daily_usage.image_count
+                            + EXCLUDED.image_count
+                    """,
+                    (user_id, day, len(images)),
+                )
+
+            cursor.execute(
                 """
-                INSERT INTO messages(chat_id, role, content, image)
-                VALUES (?, 'attachment', '', ?)
+                INSERT INTO edubot.messages
+                    (chat_id, role, content)
+                VALUES
+                    (%s, 'user', %s)
                 """,
-                (chat_id, image),
+                (chat_id, text),
             )
 
-        connection.execute(
-            "UPDATE chats SET updated_at = ? WHERE id = ?",
-            (now(), chat_id),
-        )
+            for image in images:
+                cursor.execute(
+                    """
+                    INSERT INTO edubot.messages
+                        (chat_id, role, content, image)
+                    VALUES
+                        (%s, 'attachment', '', %s)
+                    """,
+                    (chat_id, psycopg.Binary(image)),
+                )
+
+            cursor.execute(
+                """
+                UPDATE edubot.chats
+                SET updated_at = NOW()
+                WHERE id = %s
+                """,
+                (chat_id,),
+            )
 
     return chat_id
 
 
 def save_reply(chat_id, reply):
     with database() as connection:
-        owned = connection.execute(
-            "SELECT id FROM chats WHERE id = ? AND user_id = ?",
-            (chat_id, user_id),
-        ).fetchone()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id
+                FROM edubot.chats
+                WHERE id = %s
+                  AND user_id = %s
+                """,
+                (chat_id, user_id),
+            )
 
-        if not owned:
-            raise ValueError("Discussion introuvable.")
+            if not cursor.fetchone():
+                raise ValueError("Discussion introuvable.")
 
-        connection.execute(
-            """
-            INSERT INTO messages(chat_id, role, content)
-            VALUES (?, 'assistant', ?)
-            """,
-            (chat_id, reply),
-        )
-        connection.execute(
-            "UPDATE chats SET updated_at = ? WHERE id = ?",
-            (now(), chat_id),
-        )
+            cursor.execute(
+                """
+                INSERT INTO edubot.messages
+                    (chat_id, role, content)
+                VALUES
+                    (%s, 'assistant', %s)
+                """,
+                (chat_id, reply),
+            )
+
+            cursor.execute(
+                """
+                UPDATE edubot.chats
+                SET updated_at = NOW()
+                WHERE id = %s
+                """,
+                (chat_id,),
+            )
+
+
+def rename_chat(chat_id, new_title):
+    with database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE edubot.chats
+                SET title = %s
+                WHERE id = %s
+                  AND user_id = %s
+                """,
+                (new_title, chat_id, user_id),
+            )
 
 
 # ============================================================
@@ -765,6 +824,10 @@ def prepare_image(upload):
         ) from error
 
 
+# ============================================================
+# 7. ERREURS GROQ
+# ============================================================
+
 def api_error_message(error):
     if isinstance(error, groq.AuthenticationError):
         return "La clé API Groq est invalide."
@@ -787,7 +850,7 @@ def api_error_message(error):
 
 
 # ============================================================
-# 7. DIAGNOSTIC SUPABASE
+# 8. DIAGNOSTIC SUPABASE
 # ============================================================
 
 def show_supabase_test():
@@ -797,69 +860,7 @@ def show_supabase_test():
 
     st.subheader("🔧 Connexion à Supabase")
     st.write(
-        "Ce test vérifie seulement la connexion PostgreSQL. "
-        "Il ne déplace pas les discussions et ne modifie aucune table."
-    )
-
-    config = secrets.get("database", {})
-    required = ["host", "user", "password"]
-
-    missing = [
-        field
-        for field in required
-        if not str(config.get(field, "")).strip()
-    ]
-
-    if missing:
-        st.warning(
-            "Champs absents dans [database] : "
-            + ", ".join(missing)
-        )
-        return
-
-    host = str(config["host"]).strip()
-
-    # Vérifie la forme sans afficher les valeurs privées.
-    if (
-        "://" in host
-        or "/" in host
-        or "@" in host
-        or ":" in host
-        or any(character.isspace() for character in host)
-    ):
-        st.error(
-            "Le champ host doit contenir uniquement le nom du serveur. "
-            "Retire postgresql://, le port, le chemin et les espaces."
-        )
-        return
-
-    password = str(config["password"])
-
-    if password in {
-        "[YOUR-PASSWORD]",
-        "YOUR-PASSWORD",
-        "TON_MOT_DE_PASSE_DE_BASE",
-        "TON_VRAI_MOT_DE_PASSE_DE_BASE",
-    }:
-        st.error(
-            "Le champ password contient encore un exemple. "
-            "Remplace-le par le vrai mot de passe de la base."
-        )
-        return
-
-    try:
-        port = int(config.get("port", 5432))
-    except (ValueError, TypeError):
-        st.error("Le port doit être un nombre, par exemple 5432.")
-        return
-
-    if not 1 <= port <= 65535:
-        st.error("Le port est invalide.")
-        return
-
-    st.caption(
-        "Aucun mot de passe ni adresse complète de connexion "
-        "ne sera affiché dans le diagnostic."
+        "Ce test vérifie la connexion PostgreSQL et les tables EduBot."
     )
 
     if not st.button(
@@ -869,125 +870,49 @@ def show_supabase_test():
         return
 
     try:
-        import psycopg
-    except ImportError:
-        st.error(
-            "La bibliothèque psycopg manque. Ajoute "
-            "psycopg[binary]>=3.2,<4 dans requirements.txt "
-            "et attends le redéploiement."
-        )
-        return
-
-    try:
         with st.spinner("Vérification de la connexion…"):
-            with psycopg.connect(
-                host=host,
-                port=port,
-                dbname=str(config.get("dbname", "postgres")).strip(),
-                user=str(config["user"]).strip(),
-                password=password,
-                sslmode="require",
-                connect_timeout=10,
-            ) as connection:
+            with database() as connection:
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT 1")
                     result = cursor.fetchone()
 
-        if result == (1,):
+                    cursor.execute(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = 'edubot'
+                          AND table_type = 'BASE TABLE'
+                        ORDER BY table_name
+                        """
+                    )
+                    tables = [
+                        row["table_name"]
+                        for row in cursor.fetchall()
+                    ]
+
+        if result and result["?column?"] == 1:
             st.success(
                 "Connexion réussie : EduBot peut accéder à Supabase !"
             )
-            st.info(
-                "La prochaine étape sera d'adapter la sauvegarde "
-                "à PostgreSQL. L'application utilise encore SQLite."
-            )
+            st.write("Tables trouvées :")
+            st.code("\n".join(tables))
         else:
             st.error("La base a renvoyé une réponse inattendue.")
 
     except Exception as error:
-        # Le détail est analysé localement mais jamais affiché brut.
-        detail = str(error).lower()
-        sqlstate = getattr(error, "sqlstate", None)
-
-        if "tenant or user not found" in detail:
-            message = (
-                "Projet ou utilisateur introuvable : recopie ensemble "
-                "le host et le user depuis le Session pooler "
-                "du même projet Supabase."
-            )
-
-        elif (
-            sqlstate == "28P01"
-            or "password authentication failed" in detail
-        ):
-            message = (
-                "Identifiants refusés : vérifie le user du Session "
-                "pooler et le mot de passe de la base."
-            )
-
-        elif any(
-            text in detail
-            for text in [
-                "could not translate host name",
-                "name or service not known",
-                "getaddrinfo failed",
-                "failed to resolve host",
-                "nodename nor servname",
-            ]
-        ):
-            message = (
-                "Le serveur ne peut pas être trouvé. "
-                "Vérifie le champ host : copie uniquement "
-                "le nom du serveur indiqué par Supabase."
-            )
-
-        elif "network is unreachable" in detail:
-            message = (
-                "Le réseau ne peut pas joindre cette adresse. "
-                "Vérifie que tu utilises le Session pooler "
-                "et non la connexion directe."
-            )
-
-        elif "timeout" in detail or "timed out" in detail:
-            message = (
-                "Le serveur ne répond pas dans le délai prévu. "
-                "Vérifie que le projet Supabase est actif, "
-                "puis le host et le port du Session pooler."
-            )
-
-        elif "connection refused" in detail:
-            message = (
-                "La connexion est refusée. Vérifie que le projet "
-                "est actif et que le host et le port correspondent."
-            )
-
-        elif "ssl" in detail or "certificate" in detail:
-            message = (
-                "La connexion chiffrée a échoué. "
-                "Conserve sslmode='require' et vérifie le serveur."
-            )
-
-        else:
-            message = (
-                "Échec non identifié automatiquement. "
-                f"Type d'erreur : {type(error).__name__}. "
-                "Un diagnostic côté serveur sera nécessaire."
-            )
-
-        st.error(message)
-
-        if sqlstate:
-            st.caption(f"Code PostgreSQL : {sqlstate}")
-
         LOGGER.error(
-            "Test Supabase : type=%s sqlstate=%s",
+            "Test Supabase : %s",
             type(error).__name__,
-            sqlstate,
         )
+        st.error(
+            "Connexion Supabase impossible. "
+            "Vérifie DATABASE_URL dans .env ou les Secrets Streamlit."
+        )
+        st.caption(f"Type d’erreur : {type(error).__name__}")
 
 
 # ============================================================
-# 8. STATISTIQUES PRIVÉES
+# 9. STATISTIQUES PRIVÉES
 # ============================================================
 
 def show_statistics():
@@ -1004,54 +929,65 @@ def show_statistics():
     if st.button("Actualiser les statistiques"):
         st.rerun()
 
-    end_day = date.fromisoformat(today())
+    end_day = today()
     start_day = end_day - timedelta(days=29)
 
     try:
         with database() as connection:
-            accounts = connection.execute(
-                "SELECT COUNT(*) FROM users"
-            ).fetchone()[0]
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) AS total FROM edubot.users")
+                accounts = cursor.fetchone()["total"]
 
-            participating = connection.execute(
-                "SELECT COUNT(DISTINCT user_id) FROM chats"
-            ).fetchone()[0]
+                cursor.execute(
+                    """
+                    SELECT COUNT(DISTINCT user_id) AS total
+                    FROM edubot.chats
+                    """
+                )
+                participating = cursor.fetchone()["total"]
 
-            chats_count = connection.execute(
-                "SELECT COUNT(*) FROM chats"
-            ).fetchone()[0]
+                cursor.execute("SELECT COUNT(*) AS total FROM edubot.chats")
+                chats_count = cursor.fetchone()["total"]
 
-            messages_count = connection.execute(
-                "SELECT COUNT(*) FROM messages WHERE role = 'user'"
-            ).fetchone()[0]
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS total
+                    FROM edubot.messages
+                    WHERE role = 'user'
+                    """
+                )
+                messages_count = cursor.fetchone()["total"]
 
-            photos_count = connection.execute(
-                """
-                SELECT COUNT(*) FROM messages
-                WHERE role = 'attachment' AND image IS NOT NULL
-                """
-            ).fetchone()[0]
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS total
+                    FROM edubot.messages
+                    WHERE role = 'attachment'
+                      AND image IS NOT NULL
+                    """
+                )
+                photos_count = cursor.fetchone()["total"]
 
-            modes_rows = connection.execute(
-                """
-                SELECT COALESCE(cm.mode, 'course') AS mode,
-                       COUNT(*) AS total
-                FROM chats c
-                LEFT JOIN chat_modes cm ON cm.chat_id = c.id
-                GROUP BY COALESCE(cm.mode, 'course')
-                """
-            ).fetchall()
+                cursor.execute(
+                    """
+                    SELECT mode, COUNT(*) AS total
+                    FROM edubot.chats
+                    GROUP BY mode
+                    """
+                )
+                modes_rows = cursor.fetchall()
 
-            photo_rows = connection.execute(
-                """
-                SELECT day, SUM(count) AS total
-                FROM usage
-                WHERE day BETWEEN ? AND ?
-                GROUP BY day
-                ORDER BY day
-                """,
-                (start_day.isoformat(), end_day.isoformat()),
-            ).fetchall()
+                cursor.execute(
+                    """
+                    SELECT day, SUM(image_count) AS total
+                    FROM edubot.daily_usage
+                    WHERE day BETWEEN %s AND %s
+                    GROUP BY day
+                    ORDER BY day
+                    """,
+                    (start_day, end_day),
+                )
+                photo_rows = cursor.fetchall()
 
         a, b, c = st.columns(3)
         a.metric("Comptes enregistrés", accounts)
@@ -1085,13 +1021,8 @@ def show_statistics():
         else:
             st.info("Aucune discussion enregistrée.")
 
-        st.caption(
-            "Classement selon le mode actuel de la discussion. "
-            "Les anciennes discussions sans mode sont classées dans Cours."
-        )
-
         per_day = {
-            row["day"]: int(row["total"])
+            row["day"].isoformat(): int(row["total"])
             for row in photo_rows
         }
         days = [start_day + timedelta(days=n) for n in range(30)]
@@ -1110,15 +1041,7 @@ def show_statistics():
         )
 
         st.info(
-            "Ces chiffres concernent les données présentes dans SQLite. "
-            "Ils ne mesurent pas les visiteurs anonymes "
-            "ni les personnes actuellement en ligne."
-        )
-        st.caption(
-            "Les anciens comptes locaux sont inclus. Les messages "
-            "et photos restent comptés même si Groq échoue. "
-            "Les dates des messages ne sont pas enregistrées "
-            "dans le schéma actuel."
+            "Ces chiffres concernent les données présentes dans Supabase."
         )
 
     except Exception as error:
@@ -1127,7 +1050,23 @@ def show_statistics():
 
 
 # ============================================================
-# 9. NAVIGATION
+# 10. ADMINISTRATEUR
+# ============================================================
+
+def is_admin():
+    allowed = str(
+        secrets.get("admin", {}).get("google_sub", "")
+    ).strip()
+
+    return (
+        bool(st.user.get("is_logged_in", False))
+        and bool(allowed)
+        and google_sub == allowed
+    )
+
+
+# ============================================================
+# 11. NAVIGATION
 # ============================================================
 
 chats = get_chats()
@@ -1218,7 +1157,7 @@ with st.sidebar:
 
 
 # ============================================================
-# 10. PAGES ADMINISTRATEUR
+# 12. PAGES ADMINISTRATEUR
 # ============================================================
 
 if page == "🔧 Test Supabase":
@@ -1231,7 +1170,7 @@ if page == "📊 Statistiques":
 
 
 # ============================================================
-# 11. PAGE ASSISTANT
+# 13. PAGE ASSISTANT
 # ============================================================
 
 chat_id = st.session_state.get("chat_id")
@@ -1290,14 +1229,7 @@ if active_chat:
             if not new_title.strip():
                 st.warning("Le titre ne peut pas être vide.")
             else:
-                with database() as connection:
-                    connection.execute(
-                        """
-                        UPDATE chats SET title = ?
-                        WHERE id = ? AND user_id = ?
-                        """,
-                        (new_title.strip(), chat_id, user_id),
-                    )
+                rename_chat(chat_id, new_title.strip())
                 st.rerun()
 
 else:
@@ -1333,7 +1265,8 @@ st.caption(
 
 for message in history:
     if message["role"] == "attachment":
-        st.image(message["image"], width=320)
+        if message["image"]:
+            st.image(bytes(message["image"]), width=320)
     else:
         avatar = "🎓" if message["role"] == "assistant" else "👤"
 
@@ -1372,7 +1305,7 @@ if not api_key:
 
 
 # ============================================================
-# 12. APPEL GROQ
+# 14. APPEL GROQ
 # ============================================================
 
 submission = st.chat_input(
