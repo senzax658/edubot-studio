@@ -1,5 +1,5 @@
-streamlit[auth]>=1.53
+streamlit
 groq
 pillow
-tzdata
 psycopg[binary]>=3.2,<4
+python-dotenv
