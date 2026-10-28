@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import groq
 import streamlit as st
+
 from groq import Groq
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -135,6 +136,16 @@ Ne relance pas automatiquement une nouvelle série.
 """,
 }
 
+PRIVACY_MESSAGE = (
+    "Ton nom, ton e-mail, tes messages et tes photos sont enregistrés "
+    "pour faire fonctionner EduBot et retrouver ton historique. "
+    "Les éléments nécessaires aux réponses sont transmis à Groq. "
+    "L’administrateur peut consulter ton e-mail et le texte de tes "
+    "discussions pour des besoins justifiés de support "
+    "et d’administration. Les photos ne sont pas affichées "
+    "dans l’espace de consultation administrateur."
+)
+
 
 # ============================================================
 # 2. STYLE
@@ -150,7 +161,9 @@ st.markdown(
         color: #f1f5f9;
         color-scheme: dark;
     }
-    [data-testid="stHeader"] { background: transparent; }
+    [data-testid="stHeader"] {
+        background: transparent;
+    }
     .block-container {
         max-width: 1120px;
         padding-top: 2rem;
@@ -187,7 +200,9 @@ st.markdown(
     [data-testid="stMarkdownContainer"] a {
         color: #d3bfff !important;
     }
-    .katex { color: #f1f5f9 !important; }
+    .katex {
+        color: #f1f5f9 !important;
+    }
 
     [data-testid="stChatMessage"] {
         background: #192136 !important;
@@ -239,6 +254,7 @@ st.markdown(
         border: 1px solid #3c4863;
         border-radius: 14px;
     }
+
     [data-testid="stBottom"],
     [data-testid="stBottom"] > div {
         background: #0e1220 !important;
@@ -280,7 +296,9 @@ st.markdown(
         background: linear-gradient(120deg, #6941c6, #8736a8);
         border: 1px solid #b69af1;
     }
-    button:disabled { opacity: 0.5; }
+    button:disabled {
+        opacity: 0.5;
+    }
 
     .hero {
         padding: 30px;
@@ -308,8 +326,12 @@ st.markdown(
     }
 
     @media (max-width: 640px) {
-        .hero { padding: 22px; }
-        [data-testid="stChatMessage"] { padding: 14px; }
+        .hero {
+            padding: 22px;
+        }
+        [data-testid="stChatMessage"] {
+            padding: 14px;
+        }
     }
     </style>
     """,
@@ -341,7 +363,8 @@ except FileNotFoundError:
     secrets = {}
 
 auth = secrets.get("auth", {})
-required_fields = [
+
+required_auth_fields = [
     "redirect_uri",
     "cookie_secret",
     "client_id",
@@ -349,7 +372,7 @@ required_fields = [
     "server_metadata_url",
 ]
 
-if not all(auth.get(field) for field in required_fields):
+if not all(auth.get(field) for field in required_auth_fields):
     st.warning(
         "Complète la section [auth] dans les Secrets Streamlit "
         "pour activer Google."
@@ -360,21 +383,24 @@ if not st.user.get("is_logged_in", False):
     st.session_state.clear()
 
     _, center, _ = st.columns([1, 2, 1])
+
     with center:
         with st.container(border=True):
             st.subheader("Bienvenue dans ton espace ✨")
-            st.write(
-                "Connecte-toi pour retrouver tes discussions."
-            )
+            st.write("Connecte-toi pour retrouver tes discussions.")
+            st.info(PRIVACY_MESSAGE)
+
             st.button(
                 "Continuer avec Google",
                 on_click=st.login,
                 type="primary",
                 use_container_width=True,
             )
+
             st.caption(
                 "EduBot ne reçoit pas ton mot de passe Google."
             )
+
     st.stop()
 
 google_sub = str(st.user.get("sub", "")).strip()
@@ -385,7 +411,7 @@ if not google_sub:
     st.stop()
 
 display_name = st.user.get("name") or st.user.get("email") or "Élève"
-email = st.user.get("email", "")
+email = str(st.user.get("email", "") or "").strip()
 google_identity = "google:" + google_sub
 
 api_key = (
@@ -407,7 +433,7 @@ def is_admin():
 
 
 # ============================================================
-# 4. BASE SQLITE ACTUELLE
+# 4. BASE SQLITE
 # ============================================================
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -443,7 +469,11 @@ with database() as connection:
             id TEXT PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             salt BLOB NOT NULL,
-            password_hash BLOB NOT NULL
+            password_hash BLOB NOT NULL,
+            email TEXT,
+            display_name TEXT,
+            created_at TEXT,
+            last_seen_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS chats (
@@ -474,19 +504,82 @@ with database() as connection:
                 REFERENCES chats(id) ON DELETE CASCADE,
             mode TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS admin_access_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_user_id TEXT NOT NULL,
+            target_user_id TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            accessed_at TEXT NOT NULL
+        );
     """)
+
+    # Migration compatible avec l'ancienne table users.
+    user_columns = {
+        row["name"]
+        for row in connection.execute(
+            "PRAGMA table_info(users)"
+        ).fetchall()
+    }
+
+    for column in (
+        "email",
+        "display_name",
+        "created_at",
+        "last_seen_at",
+    ):
+        if column not in user_columns:
+            connection.execute(
+                f"ALTER TABLE users ADD COLUMN {column} TEXT"
+            )
+
+    # Les anciens messages conservent une date inconnue.
+    message_columns = {
+        row["name"]
+        for row in connection.execute(
+            "PRAGMA table_info(messages)"
+        ).fetchall()
+    }
+
+    if "created_at" not in message_columns:
+        connection.execute(
+            "ALTER TABLE messages ADD COLUMN created_at TEXT"
+        )
+
+    timestamp = now()
 
     connection.execute(
         """
-        INSERT OR IGNORE INTO users(
-            id, username, salt, password_hash
-        ) VALUES (?, ?, ?, ?)
+        INSERT OR IGNORE INTO users (
+            id, username, salt, password_hash,
+            email, display_name, created_at, last_seen_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             uuid.uuid4().hex,
             google_identity,
             os.urandom(16),
             os.urandom(32),
+            email,
+            str(display_name),
+            timestamp,
+            timestamp,
+        ),
+    )
+
+    connection.execute(
+        """
+        UPDATE users
+        SET email = ?, display_name = ?, last_seen_at = ?
+        WHERE username = ?
+        """,
+        (
+            email,
+            str(display_name),
+            timestamp,
+            google_identity,
         ),
     )
 
@@ -540,7 +633,11 @@ def get_messages(chat_id):
 def image_count():
     with database() as connection:
         row = connection.execute(
-            "SELECT count FROM usage WHERE user_id = ? AND day = ?",
+            """
+            SELECT count
+            FROM usage
+            WHERE user_id = ? AND day = ?
+            """,
             (user_id, today()),
         ).fetchone()
 
@@ -562,8 +659,10 @@ def save_mode(chat_id, mode):
 
         connection.execute(
             """
-            INSERT INTO chat_modes(chat_id, mode) VALUES (?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET mode = excluded.mode
+            INSERT INTO chat_modes(chat_id, mode)
+            VALUES (?, ?)
+            ON CONFLICT(chat_id)
+            DO UPDATE SET mode = excluded.mode
             """,
             (chat_id, mode),
         )
@@ -587,7 +686,8 @@ def save_submission(chat_id, text, images, mode):
 
             sent = connection.execute(
                 """
-                SELECT COUNT(*) FROM messages
+                SELECT COUNT(*)
+                FROM messages
                 WHERE chat_id = ? AND role = 'user'
                 """,
                 (chat_id,),
@@ -600,8 +700,13 @@ def save_submission(chat_id, text, images, mode):
                 )
 
         day = today()
+
         row = connection.execute(
-            "SELECT count FROM usage WHERE user_id = ? AND day = ?",
+            """
+            SELECT count
+            FROM usage
+            WHERE user_id = ? AND day = ?
+            """,
             (user_id, day),
         ).fetchone()
 
@@ -613,20 +718,27 @@ def save_submission(chat_id, text, images, mode):
                 f"Il te reste {remaining} image(s) aujourd'hui."
             )
 
+        timestamp = now()
+
         if not chat_id:
             chat_id = uuid.uuid4().hex
             title = re.sub(r"\s+", " ", text).strip()
             title = title[:57] + "…" if len(title) > 60 else title
 
             connection.execute(
-                "INSERT INTO chats VALUES (?, ?, ?, ?)",
-                (chat_id, user_id, title, now()),
+                """
+                INSERT INTO chats(id, user_id, title, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (chat_id, user_id, title, timestamp),
             )
 
         connection.execute(
             """
-            INSERT INTO chat_modes(chat_id, mode) VALUES (?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET mode = excluded.mode
+            INSERT INTO chat_modes(chat_id, mode)
+            VALUES (?, ?)
+            ON CONFLICT(chat_id)
+            DO UPDATE SET mode = excluded.mode
             """,
             (chat_id, mode),
         )
@@ -634,7 +746,8 @@ def save_submission(chat_id, text, images, mode):
         if images:
             connection.execute(
                 """
-                INSERT INTO usage(user_id, day, count) VALUES (?, ?, ?)
+                INSERT INTO usage(user_id, day, count)
+                VALUES (?, ?, ?)
                 ON CONFLICT(user_id, day)
                 DO UPDATE SET count = count + excluded.count
                 """,
@@ -643,24 +756,28 @@ def save_submission(chat_id, text, images, mode):
 
         connection.execute(
             """
-            INSERT INTO messages(chat_id, role, content)
-            VALUES (?, 'user', ?)
+            INSERT INTO messages(
+                chat_id, role, content, created_at
+            )
+            VALUES (?, 'user', ?, ?)
             """,
-            (chat_id, text),
+            (chat_id, text, timestamp),
         )
 
         for image in images:
             connection.execute(
                 """
-                INSERT INTO messages(chat_id, role, content, image)
-                VALUES (?, 'attachment', '', ?)
+                INSERT INTO messages(
+                    chat_id, role, content, image, created_at
+                )
+                VALUES (?, 'attachment', '', ?, ?)
                 """,
-                (chat_id, image),
+                (chat_id, image, timestamp),
             )
 
         connection.execute(
             "UPDATE chats SET updated_at = ? WHERE id = ?",
-            (now(), chat_id),
+            (timestamp, chat_id),
         )
 
     return chat_id
@@ -676,16 +793,21 @@ def save_reply(chat_id, reply):
         if not owned:
             raise ValueError("Discussion introuvable.")
 
+        timestamp = now()
+
         connection.execute(
             """
-            INSERT INTO messages(chat_id, role, content)
-            VALUES (?, 'assistant', ?)
+            INSERT INTO messages(
+                chat_id, role, content, created_at
+            )
+            VALUES (?, 'assistant', ?, ?)
             """,
-            (chat_id, reply),
+            (chat_id, reply, timestamp),
         )
+
         connection.execute(
             "UPDATE chats SET updated_at = ? WHERE id = ?",
-            (now(), chat_id),
+            (timestamp, chat_id),
         )
 
 
@@ -703,7 +825,9 @@ def clean_text(text):
     )
 
     parts = re.split(
-        r"(```.*?```|`[^`\n]*`)", text, flags=re.DOTALL
+        r"(```.*?```|`[^`\n]*`)",
+        text,
+        flags=re.DOTALL,
     )
 
     for index, part in enumerate(parts):
@@ -712,16 +836,20 @@ def clean_text(text):
 
         part = re.sub(
             r"\\\[(.*?)\\\]",
-            lambda m: "\n\n$$\n" + m.group(1).strip() + "\n$$\n\n",
+            lambda match: (
+                "\n\n$$\n" + match.group(1).strip() + "\n$$\n\n"
+            ),
             part,
             flags=re.DOTALL,
         )
+
         part = re.sub(
             r"\\\((.*?)\\\)",
-            lambda m: "$" + m.group(1).strip() + "$",
+            lambda match: "$" + match.group(1).strip() + "$",
             part,
             flags=re.DOTALL,
         )
+
         parts[index] = part
 
     return "".join(parts).strip()
@@ -736,12 +864,15 @@ def prepare_image(upload):
     try:
         with warnings.catch_warnings():
             warnings.simplefilter(
-                "error", Image.DecompressionBombWarning
+                "error",
+                Image.DecompressionBombWarning,
             )
 
             with Image.open(io.BytesIO(raw)) as check:
                 if check.format not in {"JPEG", "PNG", "WEBP"}:
-                    raise ValueError("Utilise une image JPG, PNG ou WebP.")
+                    raise ValueError(
+                        "Utilise une image JPG, PNG ou WebP."
+                    )
                 check.verify()
 
             with Image.open(io.BytesIO(raw)) as source:
@@ -763,33 +894,486 @@ def prepare_image(upload):
         ) from error
 
 
-# ============================================================
-# 7. ERREURS GROQ
-# ============================================================
-
 def api_error_message(error):
     if isinstance(error, groq.AuthenticationError):
         return "La clé API Groq est invalide."
+
     if isinstance(error, groq.RateLimitError):
         return "La limite Groq est atteinte. Réessaie plus tard."
+
     if isinstance(
-        error, (groq.NotFoundError, groq.PermissionDeniedError)
+        error,
+        (groq.NotFoundError, groq.PermissionDeniedError),
     ):
         return "Le modèle est inaccessible sur ton compte Groq."
+
     if isinstance(error, groq.APITimeoutError):
         return "Le délai de réponse est dépassé."
+
     if isinstance(error, groq.APIConnectionError):
         return "La connexion à Groq a échoué."
+
     if isinstance(error, groq.BadRequestError):
         return (
             "La demande a été refusée. Essaie une question plus courte "
             "ou une nouvelle discussion."
         )
+
     return "Une erreur est survenue. Consulte les journaux du serveur."
 
 
 # ============================================================
-# 8. DIAGNOSTIC SUPABASE
+# 7. STATISTIQUES GLOBALES
+# ============================================================
+
+def show_global_statistics():
+    if not is_admin():
+        st.error("Accès non autorisé.")
+        return
+
+    st.caption(
+        "Ces compteurs concernent uniquement la base SQLite "
+        "actuellement utilisée."
+    )
+
+    if st.button("Actualiser les statistiques"):
+        st.rerun()
+
+    end_day = date.fromisoformat(today())
+    start_day = end_day - timedelta(days=29)
+
+    with database() as connection:
+        accounts = connection.execute(
+            "SELECT COUNT(*) FROM users"
+        ).fetchone()[0]
+
+        participating = connection.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM chats"
+        ).fetchone()[0]
+
+        chats_count = connection.execute(
+            "SELECT COUNT(*) FROM chats"
+        ).fetchone()[0]
+
+        messages_count = connection.execute(
+            "SELECT COUNT(*) FROM messages WHERE role = 'user'"
+        ).fetchone()[0]
+
+        photos_count = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM messages
+            WHERE role = 'attachment' AND image IS NOT NULL
+            """
+        ).fetchone()[0]
+
+        modes_rows = connection.execute(
+            """
+            SELECT COALESCE(cm.mode, 'course') AS mode,
+                   COUNT(*) AS total
+            FROM chats c
+            LEFT JOIN chat_modes cm ON cm.chat_id = c.id
+            GROUP BY COALESCE(cm.mode, 'course')
+            """
+        ).fetchall()
+
+        photo_rows = connection.execute(
+            """
+            SELECT day, SUM(count) AS total
+            FROM usage
+            WHERE day BETWEEN ? AND ?
+            GROUP BY day
+            ORDER BY day
+            """,
+            (start_day.isoformat(), end_day.isoformat()),
+        ).fetchall()
+
+    a, b, c = st.columns(3)
+    a.metric("Comptes enregistrés", accounts)
+    b.metric("Comptes avec une discussion", participating)
+    c.metric("Discussions", chats_count)
+
+    d, e = st.columns(2)
+    d.metric("Messages utilisateurs", messages_count)
+    e.metric("Photos enregistrées", photos_count)
+
+    counts = {"course": 0, "exercise": 0, "quiz": 0}
+
+    for row in modes_rows:
+        if row["mode"] in counts:
+            counts[row["mode"]] += int(row["total"])
+
+    st.subheader("Répartition des discussions")
+
+    if chats_count:
+        st.bar_chart(
+            {
+                "Mode": ["Cours", "Exercices", "Quiz"],
+                "Discussions": [
+                    counts["course"],
+                    counts["exercise"],
+                    counts["quiz"],
+                ],
+            },
+            x="Mode",
+            y="Discussions",
+        )
+    else:
+        st.info("Aucune discussion enregistrée.")
+
+    st.caption(
+        "Classement selon le mode actuel de chaque discussion."
+    )
+
+    per_day = {
+        row["day"]: int(row["total"])
+        for row in photo_rows
+    }
+
+    days = [
+        start_day + timedelta(days=index)
+        for index in range(30)
+    ]
+
+    st.subheader("Photos soumises — 30 derniers jours")
+
+    st.bar_chart(
+        {
+            "Date": [day.isoformat() for day in days],
+            "Photos": [
+                per_day.get(day.isoformat(), 0)
+                for day in days
+            ],
+        },
+        x="Date",
+        y="Photos",
+    )
+
+    st.info(
+        "Ces chiffres ne mesurent pas les visiteurs anonymes "
+        "ni les utilisateurs actuellement en ligne."
+    )
+
+
+# ============================================================
+# 8. UTILISATEURS ET DISCUSSIONS — ADMIN UNIQUEMENT
+# ============================================================
+
+def show_admin_users():
+    if not is_admin():
+        st.error("Accès non autorisé.")
+        return
+
+    st.subheader("👥 Utilisateurs et discussions")
+
+    st.warning(
+        "Données personnelles : accès réservé aux besoins justifiés "
+        "de support et d’administration. "
+        "Les ouvertures de discussions sont journalisées."
+    )
+
+    with database() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                u.id,
+                u.email,
+                u.display_name,
+                u.created_at,
+                u.last_seen_at,
+                COUNT(c.id) AS discussions,
+                MAX(c.updated_at) AS last_chat
+            FROM users u
+            LEFT JOIN chats c ON c.user_id = u.id
+            GROUP BY u.id
+            ORDER BY LOWER(COALESCE(u.email, '')), u.id
+            """
+        ).fetchall()
+
+    users = [dict(row) for row in rows]
+
+    if not users:
+        st.info("Aucun utilisateur enregistré.")
+        return
+
+    search = st.text_input(
+        "Rechercher un utilisateur",
+        placeholder="Nom ou adresse e-mail…",
+        key="admin_search_user",
+    ).strip().casefold()
+
+    visible_users = [
+        user for user in users
+        if (
+            not search
+            or search in str(user["email"] or "").casefold()
+            or search in str(
+                user["display_name"] or ""
+            ).casefold()
+        )
+    ]
+
+    if not visible_users:
+        st.info("Aucun résultat.")
+        return
+
+    st.dataframe(
+        [
+            {
+                "Nom": user["display_name"] or "Non renseigné",
+                "E-mail": user["email"] or "Non renseigné",
+                "Discussions": user["discussions"],
+                "Création du compte": (
+                    user["created_at"] or "Date inconnue"
+                ),
+                "Dernière connexion": (
+                    user["last_seen_at"] or "Date inconnue"
+                ),
+            }
+            for user in visible_users
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.caption(
+        "Les anciens comptes sans e-mail seront mis à jour "
+        "à leur prochaine connexion."
+    )
+
+    users_by_id = {
+        user["id"]: user
+        for user in visible_users
+    }
+
+    def user_label(selected_id):
+        user = users_by_id[selected_id]
+        name = user["display_name"] or "Nom inconnu"
+        address = user["email"] or "E-mail non renseigné"
+        return f"{name} — {address} — {selected_id[:8]}"
+
+    selected_user_id = st.selectbox(
+        "Choisir un utilisateur",
+        options=list(users_by_id),
+        index=None,
+        placeholder="Sélectionne un utilisateur",
+        format_func=user_label,
+        key="admin_user",
+    )
+
+    if selected_user_id is None:
+        return
+
+    with database() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                c.id,
+                c.title,
+                c.updated_at,
+                COALESCE(cm.mode, 'course') AS mode,
+                (
+                    SELECT COUNT(*)
+                    FROM messages m
+                    WHERE m.chat_id = c.id AND m.role = 'user'
+                ) AS user_messages
+            FROM chats c
+            LEFT JOIN chat_modes cm ON cm.chat_id = c.id
+            WHERE c.user_id = ?
+            ORDER BY c.updated_at DESC
+            """,
+            (selected_user_id,),
+        ).fetchall()
+
+    user_chats = [dict(row) for row in rows]
+
+    if not user_chats:
+        st.info("Cet utilisateur n’a aucune discussion.")
+        return
+
+    st.subheader("Discussions")
+
+    st.dataframe(
+        [
+            {
+                "Titre": chat["title"],
+                "Mode": MODES.get(chat["mode"], chat["mode"]),
+                "Messages utilisateurs": chat["user_messages"],
+                "Dernière activité": chat["updated_at"],
+            }
+            for chat in user_chats
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    chats_by_id = {
+        chat["id"]: chat
+        for chat in user_chats
+    }
+
+    selected_chat_id = st.selectbox(
+        "Choisir une discussion",
+        options=list(chats_by_id),
+        index=None,
+        placeholder="Sélectionne une discussion",
+        format_func=lambda selected_id: (
+            f"{chats_by_id[selected_id]['title']} "
+            f"— {selected_id[:8]}"
+        ),
+        key=f"admin_chat_{selected_user_id}",
+    )
+
+    if selected_chat_id is None:
+        return
+
+    with st.form(f"admin_access_{selected_chat_id}"):
+        purpose = st.selectbox(
+            "Motif de consultation",
+            [
+                "Support demandé par l’utilisateur",
+                "Traitement d’un signalement",
+                "Diagnostic d’un incident",
+            ],
+        )
+
+        confirmed = st.checkbox(
+            "Cette consultation est nécessaire pour le motif indiqué."
+        )
+
+        open_chat = st.form_submit_button(
+            "Ouvrir la discussion",
+            type="primary",
+        )
+
+    if not open_chat:
+        return
+
+    if not confirmed:
+        st.warning("Confirme le motif avant d’ouvrir la discussion.")
+        return
+
+    if not is_admin():
+        st.error("Accès non autorisé.")
+        return
+
+    with database() as connection:
+        owned = connection.execute(
+            """
+            SELECT id
+            FROM chats
+            WHERE id = ? AND user_id = ?
+            """,
+            (selected_chat_id, selected_user_id),
+        ).fetchone()
+
+        if not owned:
+            st.error("Discussion introuvable.")
+            return
+
+        connection.execute(
+            """
+            INSERT INTO admin_access_log (
+                admin_user_id,
+                target_user_id,
+                chat_id,
+                purpose,
+                accessed_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                selected_user_id,
+                selected_chat_id,
+                purpose,
+                now(),
+            ),
+        )
+
+        messages = connection.execute(
+            """
+            SELECT id, role, content, created_at
+            FROM messages
+            WHERE chat_id = ?
+            ORDER BY id
+            """,
+            (selected_chat_id,),
+        ).fetchall()
+
+    st.subheader(chats_by_id[selected_chat_id]["title"])
+
+    if not messages:
+        st.info("Cette discussion ne contient aucun message.")
+        return
+
+    for message in messages:
+        if message["role"] == "attachment":
+            st.caption(
+                "📎 Photo jointe — non affichée dans cet espace."
+            )
+            continue
+
+        if message["role"] not in {"user", "assistant"}:
+            continue
+
+        avatar = (
+            "🎓" if message["role"] == "assistant" else "👤"
+        )
+
+        with st.chat_message(
+            message["role"],
+            avatar=avatar,
+        ):
+            if message["created_at"]:
+                st.caption(message["created_at"])
+
+            content = message["content"] or ""
+
+            if message["role"] == "assistant":
+                content = clean_text(content)
+
+            st.markdown(content, unsafe_allow_html=False)
+
+    st.caption(
+        "Les anciens messages sans date restent classés "
+        "dans leur ordre d’enregistrement."
+    )
+
+
+def show_statistics():
+    if not is_admin():
+        st.error("Accès non autorisé.")
+        return
+
+    st.subheader("📊 Administration EduBot")
+
+    tab_stats, tab_users = st.tabs(
+        [
+            "📊 Statistiques globales",
+            "👥 Utilisateurs et discussions",
+        ]
+    )
+
+    try:
+        with tab_stats:
+            show_global_statistics()
+
+        with tab_users:
+            show_admin_users()
+
+    except Exception as error:
+        LOGGER.error(
+            "Administration : type=%s",
+            type(error).__name__,
+        )
+        st.error(
+            "Impossible de charger les données d’administration."
+        )
+
+
+# ============================================================
+# 9. TEST SUPABASE FACULTATIF
 # ============================================================
 
 def show_supabase_test():
@@ -798,23 +1382,24 @@ def show_supabase_test():
         return
 
     st.subheader("🔧 Connexion à Supabase")
-    st.write(
-        "Ce test vérifie seulement la connexion PostgreSQL. "
-        "Il ne déplace pas les discussions et ne modifie aucune table."
+
+    st.info(
+        "L’application utilise SQLite. "
+        "Ce test ne migre ni ne modifie les discussions."
     )
 
     config = secrets.get("database", {})
+
     required = ["host", "user", "password"]
 
     missing = [
-        field
-        for field in required
+        field for field in required
         if not str(config.get(field, "")).strip()
     ]
 
     if missing:
         st.warning(
-            "Champs absents dans [database] : "
+            "Configuration facultative absente dans [database] : "
             + ", ".join(missing)
         )
         return
@@ -822,46 +1407,23 @@ def show_supabase_test():
     host = str(config["host"]).strip()
 
     if (
-        "://" in host
-        or "/" in host
-        or "@" in host
-        or ":" in host
+        any(character in host for character in ["/", "@", ":"])
         or any(character.isspace() for character in host)
     ):
         st.error(
-            "Le champ host doit contenir uniquement le nom du serveur. "
-            "Retire postgresql://, le port, le chemin et les espaces."
-        )
-        return
-
-    password = str(config["password"])
-
-    if password in {
-        "[YOUR-PASSWORD]",
-        "YOUR-PASSWORD",
-        "TON_MOT_DE_PASSE_DE_BASE",
-        "TON_VRAI_MOT_DE_PASSE_DE_BASE",
-    }:
-        st.error(
-            "Le champ password contient encore un exemple. "
-            "Remplace-le par le vrai mot de passe de la base."
+            "Le champ host doit contenir uniquement le nom du serveur."
         )
         return
 
     try:
         port = int(config.get("port", 5432))
-    except (ValueError, TypeError):
-        st.error("Le port doit être un nombre, par exemple 5432.")
+    except (TypeError, ValueError):
+        st.error("Le port doit être un nombre.")
         return
 
     if not 1 <= port <= 65535:
-        st.error("Le port est invalide.")
+        st.error("Port invalide.")
         return
-
-    st.caption(
-        "Aucun mot de passe ni adresse complète de connexion "
-        "ne sera affiché dans le diagnostic."
-    )
 
     if not st.button(
         "Tester la connexion à Supabase",
@@ -873,111 +1435,33 @@ def show_supabase_test():
         import psycopg
     except ImportError:
         st.error(
-            "La bibliothèque psycopg manque. Ajoute "
-            "psycopg[binary]>=3.2,<4 dans requirements.txt "
-            "et attends le redéploiement."
+            "Pour ce test seulement, ajoute "
+            "psycopg[binary]>=3.2,<4 dans requirements.txt."
         )
         return
 
     try:
-        with st.spinner("Vérification de la connexion…"):
+        with st.spinner("Vérification…"):
             with psycopg.connect(
                 host=host,
                 port=port,
-                dbname=str(config.get("dbname", "postgres")).strip(),
+                dbname=str(config.get("dbname", "postgres")),
                 user=str(config["user"]).strip(),
-                password=password,
+                password=str(config["password"]),
                 sslmode="require",
                 connect_timeout=10,
             ) as connection:
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT 1")
-                    result = cursor.fetchone()
+                result = connection.execute(
+                    "SELECT 1"
+                ).fetchone()
 
         if result == (1,):
-            st.success(
-                "Connexion réussie : EduBot peut accéder à Supabase !"
-            )
-            st.info(
-                "La prochaine étape sera d'adapter la sauvegarde "
-                "à PostgreSQL. L'application utilise encore SQLite."
-            )
+            st.success("Connexion Supabase réussie.")
         else:
-            st.error("La base a renvoyé une réponse inattendue.")
+            st.error("Réponse inattendue du serveur.")
 
     except Exception as error:
-        detail = str(error).lower()
         sqlstate = getattr(error, "sqlstate", None)
-
-        if "tenant or user not found" in detail:
-            message = (
-                "Projet ou utilisateur introuvable : recopie ensemble "
-                "le host et le user depuis le Session pooler "
-                "du même projet Supabase."
-            )
-
-        elif (
-            sqlstate == "28P01"
-            or "password authentication failed" in detail
-        ):
-            message = (
-                "Identifiants refusés : vérifie le user du Session "
-                "pooler et le mot de passe de la base."
-            )
-
-        elif any(
-            text in detail
-            for text in [
-                "could not translate host name",
-                "name or service not known",
-                "getaddrinfo failed",
-                "failed to resolve host",
-                "nodename nor servname",
-            ]
-        ):
-            message = (
-                "Le serveur ne peut pas être trouvé. "
-                "Vérifie le champ host : copie uniquement "
-                "le nom du serveur indiqué par Supabase."
-            )
-
-        elif "network is unreachable" in detail:
-            message = (
-                "Le réseau ne peut pas joindre cette adresse. "
-                "Vérifie que tu utilises le Session pooler "
-                "et non la connexion directe."
-            )
-
-        elif "timeout" in detail or "timed out" in detail:
-            message = (
-                "Le serveur ne répond pas dans le délai prévu. "
-                "Vérifie que le projet Supabase est actif, "
-                "puis le host et le port du Session pooler."
-            )
-
-        elif "connection refused" in detail:
-            message = (
-                "La connexion est refusée. Vérifie que le projet "
-                "est actif et que le host et le port correspondent."
-            )
-
-        elif "ssl" in detail or "certificate" in detail:
-            message = (
-                "La connexion chiffrée a échoué. "
-                "Conserve sslmode='require' et vérifie le serveur."
-            )
-
-        else:
-            message = (
-                "Échec non identifié automatiquement. "
-                f"Type d'erreur : {type(error).__name__}. "
-                "Un diagnostic côté serveur sera nécessaire."
-            )
-
-        st.error(message)
-
-        if sqlstate:
-            st.caption(f"Code PostgreSQL : {sqlstate}")
 
         LOGGER.error(
             "Test Supabase : type=%s sqlstate=%s",
@@ -985,145 +1469,13 @@ def show_supabase_test():
             sqlstate,
         )
 
-
-# ============================================================
-# 9. STATISTIQUES PRIVÉES
-# ============================================================
-
-def show_statistics():
-    if not is_admin():
-        st.error("Accès non autorisé.")
-        return
-
-    st.subheader("📊 Statistiques EduBot")
-    st.caption(
-        "Compteurs uniquement : aucun contenu de conversation, "
-        "aucune photo et aucune liste d'e-mails."
-    )
-
-    if st.button("Actualiser les statistiques"):
-        st.rerun()
-
-    end_day = date.fromisoformat(today())
-    start_day = end_day - timedelta(days=29)
-
-    try:
-        with database() as connection:
-            accounts = connection.execute(
-                "SELECT COUNT(*) FROM users"
-            ).fetchone()[0]
-
-            participating = connection.execute(
-                "SELECT COUNT(DISTINCT user_id) FROM chats"
-            ).fetchone()[0]
-
-            chats_count = connection.execute(
-                "SELECT COUNT(*) FROM chats"
-            ).fetchone()[0]
-
-            messages_count = connection.execute(
-                "SELECT COUNT(*) FROM messages WHERE role = 'user'"
-            ).fetchone()[0]
-
-            photos_count = connection.execute(
-                """
-                SELECT COUNT(*) FROM messages
-                WHERE role = 'attachment' AND image IS NOT NULL
-                """
-            ).fetchone()[0]
-
-            modes_rows = connection.execute(
-                """
-                SELECT COALESCE(cm.mode, 'course') AS mode,
-                       COUNT(*) AS total
-                FROM chats c
-                LEFT JOIN chat_modes cm ON cm.chat_id = c.id
-                GROUP BY COALESCE(cm.mode, 'course')
-                """
-            ).fetchall()
-
-            photo_rows = connection.execute(
-                """
-                SELECT day, SUM(count) AS total
-                FROM usage
-                WHERE day BETWEEN ? AND ?
-                GROUP BY day
-                ORDER BY day
-                """,
-                (start_day.isoformat(), end_day.isoformat()),
-            ).fetchall()
-
-        a, b, c = st.columns(3)
-        a.metric("Comptes enregistrés", accounts)
-        b.metric("Comptes avec une discussion", participating)
-        c.metric("Discussions", chats_count)
-
-        d, e = st.columns(2)
-        d.metric("Messages utilisateurs", messages_count)
-        e.metric("Photos enregistrées", photos_count)
-
-        counts = {"course": 0, "exercise": 0, "quiz": 0}
-        for row in modes_rows:
-            if row["mode"] in counts:
-                counts[row["mode"]] += int(row["total"])
-
-        st.subheader("Répartition des discussions")
-
-        if chats_count:
-            st.bar_chart(
-                {
-                    "Mode": ["Cours", "Exercices", "Quiz"],
-                    "Discussions": [
-                        counts["course"],
-                        counts["exercise"],
-                        counts["quiz"],
-                    ],
-                },
-                x="Mode",
-                y="Discussions",
-            )
-        else:
-            st.info("Aucune discussion enregistrée.")
-
-        st.caption(
-            "Classement selon le mode actuel de la discussion. "
-            "Les anciennes discussions sans mode sont classées dans Cours."
+        st.error(
+            "Connexion impossible. Vérifie le host, le user, "
+            "le port et le mot de passe du Session pooler."
         )
 
-        per_day = {
-            row["day"]: int(row["total"])
-            for row in photo_rows
-        }
-        days = [start_day + timedelta(days=n) for n in range(30)]
-
-        st.subheader("Photos soumises — 30 derniers jours")
-        st.bar_chart(
-            {
-                "Date": [day.isoformat() for day in days],
-                "Photos": [
-                    per_day.get(day.isoformat(), 0)
-                    for day in days
-                ],
-            },
-            x="Date",
-            y="Photos",
-        )
-
-        st.info(
-            "Ces chiffres concernent les données présentes dans SQLite. "
-            "Ils ne mesurent pas les visiteurs anonymes "
-            "ni les personnes actuellement en ligne."
-        )
-        st.caption(
-            "Les anciens comptes locaux sont inclus. Les messages "
-            "et photos restent comptés même si Groq échoue. "
-            "Les dates des messages ne sont pas enregistrées "
-            "dans le schéma actuel."
-        )
-
-    except Exception as error:
-        LOGGER.error("Statistiques : %s", type(error).__name__)
-        st.error("Impossible de charger les statistiques.")
+        if sqlstate:
+            st.caption(f"Code PostgreSQL : {sqlstate}")
 
 
 # ============================================================
@@ -1142,6 +1494,9 @@ with st.sidebar:
     with st.expander("⚙️ Mon compte"):
         st.caption("Identifiant Google de ton propre compte :")
         st.code(google_sub, language=None)
+
+    with st.expander("🔒 Données et confidentialité"):
+        st.write(PRIVACY_MESSAGE)
 
     if is_admin():
         page = st.radio(
@@ -1170,8 +1525,11 @@ with st.sidebar:
         st.subheader("📷 Mes photos")
 
         remaining = max(0, DAILY_IMAGE_LIMIT - image_count())
+
         st.progress(remaining / DAILY_IMAGE_LIMIT)
-        st.caption(f"{remaining} / {DAILY_IMAGE_LIMIT} images restantes")
+        st.caption(
+            f"{remaining} / {DAILY_IMAGE_LIMIT} images restantes"
+        )
         st.caption("Remise à zéro à minuit, heure de Paris.")
 
         st.divider()
@@ -1187,7 +1545,11 @@ with st.sidebar:
             if search.casefold() in chat["title"].casefold()
         ]
 
-        icons = {"course": "📖", "exercise": "🧩", "quiz": "🎯"}
+        icons = {
+            "course": "📖",
+            "exercise": "🧩",
+            "quiz": "🎯",
+        }
 
         for chat in visible_chats:
             icon = icons.get(chat["mode"], "💬")
@@ -1212,7 +1574,10 @@ with st.sidebar:
 
     st.divider()
 
-    if st.button("🚪 Me déconnecter", use_container_width=True):
+    if st.button(
+        "🚪 Me déconnecter",
+        use_container_width=True,
+    ):
         st.session_state.clear()
         st.logout()
 
@@ -1221,12 +1586,12 @@ with st.sidebar:
 # 11. PAGES ADMINISTRATEUR
 # ============================================================
 
-if page == "🔧 Test Supabase":
-    show_supabase_test()
-    st.stop()
-
 if page == "📊 Statistiques":
     show_statistics()
+    st.stop()
+
+if page == "🔧 Test Supabase":
+    show_supabase_test()
     st.stop()
 
 
@@ -1248,12 +1613,14 @@ if not active_chat:
 history = get_messages(chat_id)
 
 notice = st.session_state.pop("notice", None)
+
 if notice:
     st.error(notice)
 
 st.subheader("Comment veux-tu travailler ?")
 
 saved_mode = active_chat["mode"] if active_chat else "course"
+
 if saved_mode not in MODES:
     saved_mode = "course"
 
@@ -1284,6 +1651,7 @@ if active_chat:
                 value=active_chat["title"],
                 max_chars=80,
             )
+
             rename = st.form_submit_button("Enregistrer")
 
         if rename:
@@ -1293,11 +1661,17 @@ if active_chat:
                 with database() as connection:
                     connection.execute(
                         """
-                        UPDATE chats SET title = ?
+                        UPDATE chats
+                        SET title = ?
                         WHERE id = ? AND user_id = ?
                         """,
-                        (new_title.strip(), chat_id, user_id),
+                        (
+                            new_title.strip(),
+                            chat_id,
+                            user_id,
+                        ),
                     )
+
                 st.rerun()
 
 else:
@@ -1308,21 +1682,23 @@ else:
         ),
         "exercise": (
             "🧩 On avance ensemble",
-            "Ajoute l'énoncé et ta tentative si tu as commencé.",
+            "Ajoute l’énoncé et ta tentative si tu as commencé.",
         ),
         "quiz": (
             "🎯 À toi de jouer",
             "Indique le chapitre et ton niveau.",
         ),
     }
+
     title, description = welcome[selected_mode]
+
     st.markdown(f"### {title}")
     st.write(description)
 
 if selected_mode == "quiz":
     st.caption(
-        "Le score est suivi par l'IA dans la conversation : "
-        "c'est un entraînement, pas une notation officielle."
+        "Le score est suivi par l’IA dans la conversation : "
+        "c’est un entraînement, pas une notation officielle."
     )
 
 st.caption(
@@ -1333,11 +1709,18 @@ st.caption(
 
 for message in history:
     if message["role"] == "attachment":
-        st.image(message["image"], width=320)
-    else:
-        avatar = "🎓" if message["role"] == "assistant" else "👤"
+        if message["image"]:
+            st.image(message["image"], width=320)
 
-        with st.chat_message(message["role"], avatar=avatar):
+    elif message["role"] in {"user", "assistant"}:
+        avatar = (
+            "🎓" if message["role"] == "assistant" else "👤"
+        )
+
+        with st.chat_message(
+            message["role"],
+            avatar=avatar,
+        ):
             content = message["content"]
 
             if message["role"] == "assistant":
@@ -1349,6 +1732,7 @@ sent_count = sum(
     1 for message in history
     if message["role"] == "user"
 )
+
 limit_reached = sent_count >= CHAT_MESSAGE_LIMIT
 
 st.caption(
@@ -1362,6 +1746,7 @@ if limit_reached:
         "Ouvre une nouvelle discussion gratuitement. "
         "Ton historique reste consultable."
     )
+
     if st.button("＋ Commencer une nouvelle discussion"):
         st.session_state.pop("chat_id", None)
         st.session_state.pop("mode_new", None)
@@ -1395,13 +1780,16 @@ if submission:
 
     if len(files) > DAILY_IMAGE_LIMIT or len(files) > available:
         st.error(
-            f"Il te reste {available} image(s) aujourd'hui. "
+            f"Il te reste {available} image(s) aujourd’hui. "
             "Tu peux continuer sans photo."
         )
         st.stop()
 
     try:
-        images = [prepare_image(file) for file in files]
+        images = [
+            prepare_image(file)
+            for file in files
+        ]
     except ValueError as error:
         st.error(str(error))
         st.stop()
@@ -1411,7 +1799,10 @@ if submission:
 
     try:
         chat_id = save_submission(
-            chat_id, text, images, selected_mode
+            chat_id,
+            text,
+            images,
+            selected_mode,
         )
     except ValueError as error:
         st.error(str(error))
@@ -1421,6 +1812,7 @@ if submission:
 
     with st.chat_message("user", avatar="👤"):
         st.markdown(text)
+
         for image in images:
             st.image(image, width=320)
 
@@ -1440,18 +1832,30 @@ if submission:
     ][-context_limit:]
 
     if images:
-        content = [{"type": "text", "text": text}]
+        content = [
+            {
+                "type": "text",
+                "text": text,
+            }
+        ]
 
         for image in images:
             encoded = base64.b64encode(image).decode("ascii")
-            content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{encoded}"
-                },
-            })
+
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": (
+                            "data:image/jpeg;base64,"
+                            + encoded
+                        )
+                    },
+                }
+            )
 
         model = VISION_MODEL
+
     else:
         content = text
         model = TEXT_MODEL
@@ -1459,10 +1863,17 @@ if submission:
     messages_api = [
         {
             "role": "system",
-            "content": SYSTEM_PROMPT + "\n\n" + MODE_PROMPTS[selected_mode],
+            "content": (
+                SYSTEM_PROMPT
+                + "\n\n"
+                + MODE_PROMPTS[selected_mode]
+            ),
         },
         *previous,
-        {"role": "user", "content": content},
+        {
+            "role": "user",
+            "content": content,
+        },
     ]
 
     try:
@@ -1472,6 +1883,7 @@ if submission:
                 timeout=90.0,
                 max_retries=0,
             )
+
             result = client.chat.completions.create(
                 model=model,
                 messages=messages_api,
@@ -1479,7 +1891,9 @@ if submission:
                 max_completion_tokens=2500,
             )
 
-            reply = clean_text(result.choices[0].message.content)
+            reply = clean_text(
+                result.choices[0].message.content
+            )
 
             if not reply:
                 raise ValueError("Réponse vide.")
@@ -1502,6 +1916,7 @@ if submission:
     st.rerun()
 
 st.divider()
+
 st.caption(
     "EduBot Studio • Comprendre plutôt que recopier • "
     "Les réponses peuvent contenir des erreurs."
