@@ -359,8 +359,18 @@ st.markdown(
 
 try:
     secrets = st.secrets.to_dict()
-except FileNotFoundError:
-    secrets = {}
+except Exception as error:
+    LOGGER.error(
+        "Chargement des secrets : type=%s",
+        type(error).__name__,
+    )
+
+    st.error(
+        "La configuration de l’application est indisponible. "
+        "L’administrateur doit vérifier les Secrets Streamlit."
+    )
+    st.stop()
+
 
 auth = secrets.get("auth", {})
 
@@ -372,57 +382,190 @@ required_auth_fields = [
     "server_metadata_url",
 ]
 
-if not all(auth.get(field) for field in required_auth_fields):
-    st.warning(
-        "Complète la section [auth] dans les Secrets Streamlit "
-        "pour activer Google."
+if not isinstance(auth, dict):
+    st.error(
+        "La configuration Google est incorrecte. "
+        "Vérifie la section [auth] des Secrets Streamlit."
     )
     st.stop()
 
-if not st.user.get("is_logged_in", False):
-    st.session_state.clear()
+missing_auth_fields = [
+    field
+    for field in required_auth_fields
+    if not str(auth.get(field, "") or "").strip()
+]
+
+if missing_auth_fields:
+    st.error(
+        "La connexion Google n’est pas encore configurée."
+    )
+
+    st.caption(
+        "L’administrateur doit compléter les champs suivants "
+        "dans [auth] : "
+        + ", ".join(missing_auth_fields)
+    )
+
+    st.stop()
+
+
+redirect_uri = str(auth["redirect_uri"]).strip()
+
+if (
+    not redirect_uri.startswith(("https://", "http://localhost"))
+    or not redirect_uri.endswith("/oauth2callback")
+):
+    st.error(
+        "L’adresse de retour Google est incorrecte. "
+        "Elle doit se terminer par /oauth2callback."
+    )
+    st.stop()
+
+
+try:
+    logged_in = bool(
+        st.user.get("is_logged_in", False)
+    )
+except Exception as error:
+    LOGGER.error(
+        "Lecture de la connexion Google : type=%s",
+        type(error).__name__,
+    )
+
+    st.error(
+        "Impossible de vérifier ta connexion. "
+        "Ferme cet onglet puis ouvre de nouveau l’application."
+    )
+    st.stop()
+
+
+if not logged_in:
+    # Nettoie les informations du compte précédent, une seule fois.
+    if st.session_state.get("identity"):
+        st.session_state.clear()
 
     _, center, _ = st.columns([1, 2, 1])
 
     with center:
         with st.container(border=True):
             st.subheader("Bienvenue dans ton espace ✨")
-            st.write("Connecte-toi pour retrouver tes discussions.")
+
+            st.write(
+                "Connecte-toi avec Google pour retrouver "
+                "tes discussions."
+            )
+
             st.info(PRIVACY_MESSAGE)
 
-            st.button(
+            login_clicked = st.button(
                 "Continuer avec Google",
-                on_click=st.login,
                 type="primary",
                 use_container_width=True,
+                key="google_login_button",
             )
+
+            if login_clicked:
+                try:
+                    st.login()
+
+                except Exception as error:
+                    LOGGER.error(
+                        "Démarrage Google : type=%s",
+                        type(error).__name__,
+                    )
+
+                    st.error(
+                        "La connexion Google n’a pas pu démarrer. "
+                        "Réessaie une fois. Si le problème continue, "
+                        "transmets le message affiché à "
+                        "l’administrateur."
+                    )
+
+                    st.caption(
+                        "Code de diagnostic : "
+                        + type(error).__name__
+                    )
 
             st.caption(
                 "EduBot ne reçoit pas ton mot de passe Google."
             )
 
+            with st.expander(
+                "La connexion Google ne fonctionne pas ?"
+            ):
+                st.write(
+                    "Si Google affiche « accès bloqué », "
+                    "« access_denied » ou "
+                    "« redirect_uri_mismatch », "
+                    "copie ce message et transmets-le "
+                    "à l’administrateur."
+                )
+
+                st.write(
+                    "Ne transmets jamais ton mot de passe "
+                    "ni un code de validation Google."
+                )
+
     st.stop()
 
-google_sub = str(st.user.get("sub", "")).strip()
+
+google_sub = str(
+    st.user.get("sub", "") or ""
+).strip()
 
 if not google_sub:
-    st.error("L'identifiant Google est absent.")
-    st.button("Se déconnecter", on_click=st.logout)
+    st.error(
+        "Google n’a pas transmis l’identifiant nécessaire "
+        "à la création de ton espace."
+    )
+
+    if st.button(
+        "Se déconnecter et réessayer",
+        key="logout_missing_google_id",
+    ):
+        try:
+            st.logout()
+        except Exception as error:
+            LOGGER.error(
+                "Déconnexion Google : type=%s",
+                type(error).__name__,
+            )
+
+            st.error(
+                "Ferme cet onglet et ouvre de nouveau "
+                "l’application."
+            )
+
     st.stop()
 
-display_name = st.user.get("name") or st.user.get("email") or "Élève"
-email = str(st.user.get("email", "") or "").strip()
+
+email = str(
+    st.user.get("email", "") or ""
+).strip()
+
+display_name = str(
+    st.user.get("name", "")
+    or email
+    or "Élève"
+).strip()
+
 google_identity = "google:" + google_sub
 
-api_key = (
+api_key = str(
     os.environ.get("GROQ_API_KEY", "")
     or secrets.get("GROQ_API_KEY", "")
+    or ""
 ).strip()
 
 
 def is_admin():
+    admin_config = secrets.get("admin", {})
+
+    if not isinstance(admin_config, dict):
+        return False
+
     allowed = str(
-        secrets.get("admin", {}).get("google_sub", "")
+        admin_config.get("google_sub", "") or ""
     ).strip()
 
     return (
@@ -430,7 +573,6 @@ def is_admin():
         and bool(allowed)
         and google_sub == allowed
     )
-
 
 # ============================================================
 # 4. BASE SQLITE
